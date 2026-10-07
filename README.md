@@ -87,6 +87,22 @@ type = learner | employer | trainer_partner
 
 A numeric `id`, and `null` or `""` for missing fields, are accepted. If the signature is refused, the messenger still opens — anonymously — and `onDiagnostic` reports `identity_rejected` with the reason: fix the backend, nothing in the app.
 
+**Where it comes from in GuardPass and APLH:** the manage-booking response, `data.support_identity` (GuardPass `GET /protect/api/auth/manage-booking`, APLH `GET /api/v1/aplh/elearning/auth/manage-booking`). It is `null` until the backend has that app's secret; pass it to `tryParse` either way.
+
+### What the app sent to Intercom, and where it is now
+
+The booking travels **inside the signed identity**, filled in by the backend from the booking — the app does not send it separately:
+
+| Sent to Intercom from the app | In GL Support Chat |
+|---|---|
+| `email`, `name` | the identity's `email` and `name`, from the booking |
+| `user_hash` (made on the phone) | the identity's `hash`, made by the backend — the app never signs anything |
+| `custom_attributes.booking_id` | the identity's `id`: `learner:<booking id>` (`stg:learner:<booking id>` on staging) |
+| `custom_attributes.booking_first_name`, `booking_last_name` | the identity's `name`: `"<first name> <last name>"` |
+| `custom_attributes.system_version`, `version`, `manufacturer`, `model` | `GLSupportChatDevice(os:, appVersion:, manufacturer:, model:, appBuild:)` in `configure` (§2) |
+
+So for the booking the app does one thing: pass `data.support_identity` to `tryParse` **unchanged**. Only the six fields above are read and signed: extra fields added to the object are dropped, and changing any of the six (formatting the phone, trimming the name, rebuilding the object) breaks the signature. The team sees the name and a Learner chip on the conversation, and the booking itself — course, dates, payment — in the inbox's customer panel, looked up from GL Admin by that `id`.
+
 ## 3. What the customer sees
 
 | Screen | What is on it |
@@ -133,7 +149,7 @@ Push reaches **identified** users only (`registerPushToken` waits for `login`). 
 ## 6. Replacing the Intercom SDK — per app
 
 1. Add the package (§1) and the two iOS strings (§0).
-2. `Intercom.loginIdentifiedUser` → `GLSupportChat.login(GLSupportChatIdentity.tryParse(...))`.
+2. `Intercom.loginIdentifiedUser` → `GLSupportChat.login(GLSupportChatIdentity.tryParse(...))` with `data.support_identity`; Intercom's `custom_attributes` are not sent — see "What the app sent to Intercom" (§2).
 3. `Intercom.displayMessenger()` → `GLSupportChat.present(context)`; `displayHelpCenter` → `presentHelp`; `displayArticle(id)` → `presentArticle(slug)` (slugs from the dashboard's Articles page).
 4. Unread badge: `GLSupportChat.unreadCount`.
 5. Push: `Intercom.sendTokenToIntercom` → `GLSupportChat.registerPushToken`; handle `data['type'] == 'message'` on tap.
