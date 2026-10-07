@@ -41,6 +41,7 @@ class GLSupportChatIdentity {
     this.phone,
     this.name,
     this.type,
+    this.extra = const <String, String>{},
   });
 
   /// GL Admin id of the customer.
@@ -57,14 +58,20 @@ class GLSupportChatIdentity {
   /// unverified identity.
   final String? hash;
 
+  /// Any other details that came with the identity (for example
+  /// `booking_first_name` or `model`). Sent inside the `identity` object next
+  /// to the six known fields. They are never part of the signature, so the
+  /// server cannot trust them.
+  final Map<String, String> extra;
+
   /// True when your backend signed it.
   bool get isVerified => hash != null && hash!.isNotEmpty;
 
   /// Accepts what a Laravel backend really sends: a numeric `id`, and `null`
   /// or "" for fields it does not have. A missing or empty `hash` makes an
-  /// unverified identity. Keys other than the six known ones are ignored.
-  /// Throws [FormatException] when there is no id — use [tryParse] to get
-  /// `null` instead.
+  /// unverified identity. Keys other than the six known ones are kept in
+  /// [extra] (blank values are dropped). Throws [FormatException] when there
+  /// is no id — use [tryParse] to get `null` instead.
   factory GLSupportChatIdentity.fromJson(Map<String, dynamic> json) {
     final id = json['id'];
     final hash = json['hash'];
@@ -78,6 +85,14 @@ class GLSupportChatIdentity {
       return s.isEmpty ? null : s;
     }
 
+    final extra = <String, String>{};
+    json.forEach((key, value) {
+      final k = key.trim();
+      final v = text(value);
+      if (_knownKeys.contains(key) || k.isEmpty || v == null) return;
+      extra[k] = v;
+    });
+
     return GLSupportChatIdentity(
       id: idText,
       hash: hash is String && hash.isNotEmpty ? hash : null,
@@ -85,8 +100,11 @@ class GLSupportChatIdentity {
       phone: text(json['phone']),
       name: text(json['name']),
       type: text(json['type']),
+      extra: extra,
     );
   }
+
+  static const Set<String> _knownKeys = <String>{'id', 'hash', 'email', 'phone', 'name', 'type'};
 
   /// [fromJson], or `null` for anything that is not a usable identity — so a
   /// missing or odd `support_identity` can never crash the app's sign-in.
@@ -99,8 +117,11 @@ class GLSupportChatIdentity {
     }
   }
 
-  /// The six fields; `hash` only when there is one.
+  /// [extra], then the six fields (`hash` only when there is one). An extra
+  /// key can never replace one of the six.
   Map<String, dynamic> toJson() => {
+        for (final e in extra.entries)
+          if (!_knownKeys.contains(e.key)) e.key: e.value,
         'id': id,
         if (email != null) 'email': email,
         if (phone != null) 'phone': phone,

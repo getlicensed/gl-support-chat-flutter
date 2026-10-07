@@ -72,19 +72,22 @@ void main() {
     expect((authBodies.single['identity'] as Map<String, dynamic>).containsKey('hash'), isFalse);
   });
 
-  test('keys other than the six never reach the sign-in', () async {
-    final identity = GLSupportChatIdentity.tryParse(<String, dynamic>{
+  test('the whole map from tryParse(data) goes inside the identity, with no separate attributes', () async {
+    final data = <String, dynamic>{
       'id': '220657',
-      'email': 'a@b.co',
+      'email': 'ayesha@example.com',
+      'name': 'Ayesha Khan',
       'system_version': 'Android 14',
+      'version': 'SDK 34',
+      'manufacturer': 'samsung',
+      'model': 'SM-S918B',
       'booking_first_name': 'Ayesha',
-    })!;
+      'booking_last_name': 'Khan',
+    };
+    final identity = GLSupportChatIdentity.tryParse(data)!;
     await GLSupportChat.login(identity);
 
-    expect(
-      (authBodies.single['identity'] as Map<String, dynamic>).keys.toSet(),
-      <String>{'id', 'email'},
-    );
+    expect(authBodies.single['identity'], data);
     expect(authBodies.single.containsKey('attributes'), isFalse);
   });
 

@@ -78,16 +78,34 @@ void main() {
       expect(GLSupportChatIdentity.tryParse({'id': 1, 'hash': 123})!.isVerified, isFalse, reason: 'a non-string hash is no hash');
     });
 
-    test('keys other than the six are ignored', () {
+    test('keys other than the six are kept as extra and travel with the identity', () {
       final identity = GLSupportChatIdentity.tryParse({
         'id': 'learner:1',
         'hash': 'abc',
         'email': 'a@b.co',
         'booking_first_name': 'Ayesha',
         'model': 'Pixel 8',
+        'blank': '',
+        'gone': null,
       })!;
       expect(identity.isVerified, isTrue);
-      expect(identity.toJson().keys.toSet(), <String>{'id', 'email', 'hash'});
+      expect(identity.extra, <String, String>{'booking_first_name': 'Ayesha', 'model': 'Pixel 8'});
+      expect(
+        identity.toJson().keys.toSet(),
+        <String>{'id', 'email', 'hash', 'booking_first_name', 'model'},
+      );
+    });
+
+    test('an extra key can never replace one of the six', () {
+      const identity = GLSupportChatIdentity(
+        id: 'learner:1',
+        email: 'real@b.co',
+        extra: <String, String>{'email': 'fake@b.co', 'id': 'x', 'hash': 'y'},
+      );
+      final json = identity.toJson();
+      expect(json['id'], 'learner:1');
+      expect(json['email'], 'real@b.co');
+      expect(json.containsKey('hash'), isFalse);
     });
   });
 

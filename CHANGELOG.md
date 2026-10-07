@@ -1,6 +1,6 @@
 ## Unreleased
 
-- **An identity without a `hash` is now accepted as unverified.** `GLSupportChatIdentity.tryParse` needs only an `id`. `login` sends the same `identity` object, without a `hash`, and keys other than the six known ones are still ignored. It is up to the server whether to show it as unverified; a server that only takes signed identities answers 401 and the plugin opens the chat anonymously, as before. **Breaking:** `GLSupportChatIdentity.hash` is now `String?` (use `isVerified`), and `tryParse({'id': 1})` no longer returns `null`. `messengerUrl()` carries only a signed identity.
+- **An identity without a `hash` is now accepted as unverified.** `GLSupportChatIdentity.tryParse` needs only an `id`. `login` sends the same `identity` object, without a `hash`. Keys other than the six known ones are kept in the new `GLSupportChatIdentity.extra` and sent inside that object, unsigned and never able to replace one of the six. It is up to the server whether to show it as unverified; a server that only takes signed identities answers 401 and the plugin opens the chat anonymously, as before. **Breaking:** `GLSupportChatIdentity.hash` is now `String?` (use `isVerified`), and `tryParse({'id': 1})` no longer returns `null`. `messengerUrl()` carries only a signed identity.
 
 ## 0.4.2
 

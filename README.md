@@ -97,7 +97,7 @@ type = optional, one of the customer types the server accepts: learner | employe
 
 `GLSupportChatIdentity.isVerified` tells you which kind you hold: `true` when there is a `hash`.
 
-Sign the values exactly as you send them. A numeric `id`, and `null` or `""` for missing fields, are accepted. Only those six fields are read and signed: extra fields in the object are dropped, and changing any of the six after signing (reformatting the phone, trimming the name, rebuilding the object) breaks the signature, so pass the object to `tryParse` unchanged.
+Sign the values exactly as you send them. A numeric `id`, and `null` or `""` for missing fields, are accepted. Only those six fields are signed: extra keys in the object travel with it (see below) but are not part of the signature, and changing any of the six after signing (reformatting the phone, trimming the name, rebuilding the object) breaks the signature, so pass the object to `tryParse` unchanged.
 
 If the signature is refused, the messenger still opens, anonymously, and `onDiagnostic` reports `identity_rejected` with the reason: fix the backend, nothing in the app. If your backend has no identity for a customer, skip `login`: the messenger opens anonymously and everything else works.
 
@@ -112,7 +112,7 @@ final identity = GLSupportChatIdentity.tryParse({
 if (identity != null) await GLSupportChat.login(identity);   // identity.isVerified is false
 ```
 
-- **Only the six fields travel.** `id`, `email`, `phone`, `name`, `type` (and `hash` when there is one). Any other key in the map is ignored.
+- **The six fields, and any extra keys.** `id`, `email`, `phone`, `name`, `type` (and `hash` when there is one) are the identity. Any other key in the map (for example `system_version` or `booking_first_name`) is kept in `identity.extra` and sent inside the same `identity` object. Extra keys are never signed, so the server cannot trust them, and one can never replace the six.
 - **The server decides.** Nothing vouches for an unverified identity. A server that only accepts signed identities answers 401, and the plugin then opens the chat anonymously (`identity_rejected` in `onDiagnostic`). A server that accepts them can show the details to the team as unverified.
 - **Not shared across devices.** Only a signed identity (`identity.isVerified`) can join the customer to their history across devices and channels.
 - **The browser link** from `messengerUrl()` carries a signed identity only.
