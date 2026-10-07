@@ -33,7 +33,9 @@ Pin a tag (`ref`) so a build only changes when you move it; the versions are in 
 await GLSupportChat.configure(
   apiUrl: 'https://support-api.get-licensed.co.uk',
   productId: '<this app\'s chatbot id — Chatbots → the chatbot → Install>',
-  appId: 'com.getlicensed.guardpass',
+  // This platform's own id — Android's applicationId, iOS's bundle id, so they differ:
+  // package_info_plus gives it as packageName. Shown to the team; never used to route.
+  appId: packageInfo.packageName,
   // Shown to the team on each conversation: "iOS 17.4 · iPhone 15 Pro · v3.4.0 (412)".
   // Fill it from what the app already uses (device_info_plus, package_info_plus);
   // the package adds the platform and appId. Display only — never signed, never trusted.
@@ -72,6 +74,8 @@ GLSupportChat.presentArticle(context, 'how-do-i-renew-my-sia-licence');
 // Sign-out (returns at once). The next person on this phone starts as a new visitor.
 await GLSupportChat.logout();
 ```
+
+**Android and iOS:** the same `productId` on both — one chatbot per app, so a customer's conversations are the same whichever phone they use — and each platform's own `appId`. `appId` is optional: it labels the device and the push token for the team (the conversation's device chip says which app build wrote), and nothing depends on it.
 
 **Put a "Contact support" entry on the sign-in screen too.** "I can't log in" is one of the most common reasons to contact support, and those customers have no identity yet — `present` without `login` opens the messenger anonymously. An anonymous chat is kept on the phone (per chatbot) and becomes the customer's own history when they sign in.
 
