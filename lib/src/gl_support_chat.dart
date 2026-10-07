@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 
@@ -29,10 +28,15 @@ typedef GLSupportChatDiagnostics = void Function(String event, Map<String, Objec
 /// The signed identity your backend returns for the signed-in user — the
 /// same object the website passes as `data-identity`. Never build the hash
 /// in the app: the secret must stay on the server.
+///
+/// An identity is **verified** when it has a [hash] your backend made: the
+/// server can check it. Without a [hash] it is **unverified**: it is still
+/// sent, as the same `identity` object without a `hash`, and it is up to the
+/// server whether to show it as unverified or ignore it.
 class GLSupportChatIdentity {
   const GLSupportChatIdentity({
     required this.id,
-    required this.hash,
+    this.hash,
     this.email,
     this.phone,
     this.name,
@@ -49,18 +53,24 @@ class GLSupportChatIdentity {
   final String? type;
 
   /// HMAC-SHA256 hex over `id|email|phone|type|name` with the chatbot's
-  /// identity secret (see "The identity" in the README).
-  final String hash;
+  /// identity secret (see "The identity" in the README). `null` for an
+  /// unverified identity.
+  final String? hash;
+
+  /// True when your backend signed it.
+  bool get isVerified => hash != null && hash!.isNotEmpty;
 
   /// Accepts what a Laravel backend really sends: a numeric `id`, and `null`
-  /// or "" for fields it does not have. Throws [FormatException] when there
-  /// is no id or no hash — use [tryParse] to get `null` instead.
+  /// or "" for fields it does not have. A missing or empty `hash` makes an
+  /// unverified identity. Keys other than the six known ones are ignored.
+  /// Throws [FormatException] when there is no id — use [tryParse] to get
+  /// `null` instead.
   factory GLSupportChatIdentity.fromJson(Map<String, dynamic> json) {
     final id = json['id'];
     final hash = json['hash'];
     final idText = id == null ? '' : '$id'.trim();
-    if (idText.isEmpty || hash is! String || hash.isEmpty) {
-      throw const FormatException('support_identity needs an id and a hash');
+    if (idText.isEmpty) {
+      throw const FormatException('an identity needs an id');
     }
     String? text(Object? v) {
       if (v == null) return null;
@@ -70,7 +80,7 @@ class GLSupportChatIdentity {
 
     return GLSupportChatIdentity(
       id: idText,
-      hash: hash,
+      hash: hash is String && hash.isNotEmpty ? hash : null,
       email: text(json['email']),
       phone: text(json['phone']),
       name: text(json['name']),
@@ -89,13 +99,14 @@ class GLSupportChatIdentity {
     }
   }
 
+  /// The six fields; `hash` only when there is one.
   Map<String, dynamic> toJson() => {
         'id': id,
         if (email != null) 'email': email,
         if (phone != null) 'phone': phone,
         if (type != null) 'type': type,
         if (name != null) 'name': name,
-        'hash': hash,
+        if (hash != null) 'hash': hash,
       };
 }
 
@@ -112,7 +123,6 @@ class GLSupportChat {
   static String? _appId;
   static GLSupportChatDevice? _device;
   static GLSupportChatIdentity? _identity;
-  static Map<String, String> _attributes = const <String, String>{};
   static String? _pushToken;
   static String? _pushPlatform;
   static Timer? _pollTimer;
@@ -198,37 +208,6 @@ class GLSupportChat {
     }
   }
 
-  /// Details about the customer for the team to see, such as
-  /// `{'email': …, 'name': …, 'booking_id': …}`. They are sent with the
-  /// sign-in as `attributes`: unverified and display-only, never signed and
-  /// never used to decide who the customer is. Replaces whatever was set
-  /// before; an empty map clears it. Blank keys and values are dropped and at
-  /// most [maxAttributes] entries are kept.
-  ///
-  /// If the customer is already signed in to the chat, the new details are
-  /// sent at once. Otherwise they go with the next sign-in. Cleared by
-  /// [logout]. Never throws.
-  static Future<void> setAttributes(Map<String, String> attributes) async {
-    final cleaned = <String, String>{};
-    for (final entry in attributes.entries) {
-      final key = entry.key.trim();
-      final value = entry.value.trim();
-      if (key.isEmpty || value.isEmpty || cleaned.length >= maxAttributes) continue;
-      cleaned[key] = value;
-    }
-    if (mapEquals(cleaned, _attributes)) return;
-    _attributes = cleaned;
-    final api = _api;
-    if (api == null || api.token == null) return;
-    api.token = null;
-    try {
-      await _authenticateInBackground();
-    } catch (_) {}
-  }
-
-  /// The most [setAttributes] keeps; the rest are dropped.
-  static const int maxAttributes = 20;
-
   /// The user signed out: forget the identity, detach the device, and start
   /// the next customer on this phone as a new anonymous visitor. Returns at
   /// once; detaching the push token finishes in the background.
@@ -237,7 +216,6 @@ class GLSupportChat {
     final push = _pushToken;
     final bearer = api?.token;
     _identity = null;
-    _attributes = const <String, String>{};
     _authFailures = 0;
     _authPausedUntil = null;
     _emitUnread(0);
@@ -333,7 +311,7 @@ class GLSupportChat {
   static String messengerUrl({GLSupportChatScreen screen = GLSupportChatScreen.home}) {
     final api = _api;
     if (api == null) throw StateError('GLSupportChat.configure() has not been called');
-    return buildMessengerUrl(apiUrl: api.apiUrl, productId: api.productId, start: screen.value, identity: _identity?.toJson());
+    return buildMessengerUrl(apiUrl: api.apiUrl, productId: api.productId, start: screen.value, identity: _identity?.isVerified == true ? _identity!.toJson() : null);
   }
 
   /// Replace the HTTP client, the session store or the live connection —
@@ -367,7 +345,6 @@ class GLSupportChat {
       visitorId: stored,
       identity: _identity?.toJson(),
       device: device.isEmpty ? null : device,
-      attributes: _attributes.isEmpty ? null : _attributes,
       onIdentityRejected: (code, _) => _diag('identity_rejected', <String, Object?>{'code': code}),
     );
     if (session.visitorId.isNotEmpty && session.visitorId != stored) await _store.saveVisitorId(product, session.visitorId);

@@ -1,6 +1,6 @@
 ## Unreleased
 
-- **`GLSupportChat.setAttributes(Map<String, String>)`** — unverified, display-only details about the customer (name, email, booking id and the like), sent with the sign-in as `attributes` next to `device`. Never signed and never used to decide who the customer is, so it needs no hash and works for a signed-in customer or a guest. Blank keys and values are dropped and at most 20 entries are kept. Sent at once if the customer is already signed in to the chat, otherwise with the next sign-in. `logout()` clears it. **Needs the server to accept `attributes` on `POST /widget/auth`**; an older server ignores it.
+- **An identity without a `hash` is now accepted as unverified.** `GLSupportChatIdentity.tryParse` needs only an `id`. `login` sends the same `identity` object, without a `hash`, and keys other than the six known ones are still ignored. It is up to the server whether to show it as unverified; a server that only takes signed identities answers 401 and the plugin opens the chat anonymously, as before. **Breaking:** `GLSupportChatIdentity.hash` is now `String?` (use `isVerified`), and `tryParse({'id': 1})` no longer returns `null`. `messengerUrl()` carries only a signed identity.
 
 ## 0.4.2
 

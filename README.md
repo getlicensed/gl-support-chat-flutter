@@ -81,44 +81,41 @@ await GLSupportChat.logout();
 
 **Android and iOS:** use the same `productId` on both (one chatbot per app, so a customer's conversations are the same whichever phone they use) and each platform's own `appId`. `appId` is optional: it labels the device and the push token for the team (the conversation's device chip says which app build wrote), and nothing depends on it.
 
-**Offer support before sign-in too.** "I can't log in" is one of the most common reasons to contact support, and those customers have no identity yet. `present` without `login` opens the messenger anonymously. An anonymous chat is kept on the phone (per chatbot) and becomes the customer's own history when they sign in.
+**Offer support before sign-in too.** "I can't log in" is one of the most common reasons to contact support, and those customers have no identity yet. `present` without `login` opens the messenger anonymously. An anonymous chat is kept on the phone (per chatbot) and becomes the customer's own history when they sign in with a signed identity.
 
 ### The identity
 
 The identity tells the server who the customer is, so their name, email and history are one contact. **Your backend signs it** and returns it (for example in the profile or sign-in response); the app only passes it on. The signing secret belongs to the chatbot (Chatbots → the chatbot → Install) and never goes in the app.
 
 ```
-{ id, email?, phone?, type?, name?, hash }
+{ id, email?, phone?, type?, name?, hash? }
 id   = a unique, stable id for the customer in your system, as a string
 hash = HMAC-SHA256(secret, "id|email|phone|type|name")   (hex; a missing field is an empty string)
+       present: a verified identity the server checks. Missing: an unverified identity (below)
 type = optional, one of the customer types the server accepts: learner | employer | trainer_partner
 ```
+
+`GLSupportChatIdentity.isVerified` tells you which kind you hold: `true` when there is a `hash`.
 
 Sign the values exactly as you send them. A numeric `id`, and `null` or `""` for missing fields, are accepted. Only those six fields are read and signed: extra fields in the object are dropped, and changing any of the six after signing (reformatting the phone, trimming the name, rebuilding the object) breaks the signature, so pass the object to `tryParse` unchanged.
 
 If the signature is refused, the messenger still opens, anonymously, and `onDiagnostic` reports `identity_rejected` with the reason: fix the backend, nothing in the app. If your backend has no identity for a customer, skip `login`: the messenger opens anonymously and everything else works.
 
-### Extra details about the customer (`setAttributes`)
-
-Use this to show the support team more about the customer than the identity carries, such as a name, an email, an order number or a plan. The values are **unverified and display-only**: they are not signed, so the server never uses them to decide who the customer is. That means no hash and no backend signing. Use [`login`](#the-identity) when you need a verified customer.
+**Without a hash (unverified).** `tryParse` also accepts a map that has an `id` but no `hash`, and `login` sends it as the same `identity` object, just without a `hash`:
 
 ```dart
-await GLSupportChat.setAttributes({
+final identity = GLSupportChatIdentity.tryParse({
+  'id': '220657',                    // required, any non-empty value
   'email': 'ayesha@example.com',
   'name': 'Ayesha Khan',
-  'order_id': '220657',
-  'plan': 'premium',
 });
+if (identity != null) await GLSupportChat.login(identity);   // identity.isVerified is false
 ```
 
-- **Plain strings.** `Map<String, String>`, whatever keys your app finds useful.
-- **When it is sent.** With the sign-in, as `attributes`, next to `identity` and `device`. If the customer is already signed in to the chat, the new values are sent at once. Otherwise they go with the next sign-in, so call it before or after `login`, or without `login` for a guest.
-- **Replace, not merge.** Each call replaces the previous map. Pass an empty map to clear it.
-- **Tidied for you.** Keys and values are trimmed, blank ones are dropped, and at most `GLSupportChat.maxAttributes` (20) entries are kept.
-- **Cleared on sign-out.** `logout()` forgets them, so the next person on the phone starts clean.
-- **Never throws.** A failed send is reported through `onDiagnostic`, like any sign-in.
-
-The server must accept `attributes` on `POST /widget/auth` and show them to the team. A server that does not simply ignores them.
+- **Only the six fields travel.** `id`, `email`, `phone`, `name`, `type` (and `hash` when there is one). Any other key in the map is ignored.
+- **The server decides.** Nothing vouches for an unverified identity. A server that only accepts signed identities answers 401, and the plugin then opens the chat anonymously (`identity_rejected` in `onDiagnostic`). A server that accepts them can show the details to the team as unverified.
+- **Not shared across devices.** Only a signed identity (`identity.isVerified`) can join the customer to their history across devices and channels.
+- **The browser link** from `messengerUrl()` carries a signed identity only.
 
 ## 3. What the customer sees
 
@@ -169,7 +166,7 @@ The calls map across like this (shown for Intercom; other SDKs are similar):
 
 1. Add the package (§1) and the two iOS strings (§0).
 2. Identify the user: `Intercom.loginIdentifiedUser` → `GLSupportChat.login(GLSupportChatIdentity.tryParse(...))` with an identity your backend signed. Intercom's `user_hash`, which an app often computed on the phone, becomes the identity's `hash`, made by the backend.
-3. Custom attributes: `custom_attributes` → [`setAttributes`](#extra-details-about-the-customer-setattributes) for details about the customer, and `GLSupportChatDevice` in `configure` for device and app details (OS, model, manufacturer, version, build).
+3. Custom attributes: there is no free-form attribute map. Customer details go in the identity (`email`, `name`, `phone`, `type`, and an `id` that can carry an order or booking id), and device and app details go in `GLSupportChatDevice` in `configure` (OS, model, manufacturer, version, build).
 4. Open: `Intercom.displayMessenger()` → `GLSupportChat.present(context)`; `displayHelpCenter` → `presentHelp`; `displayArticle(id)` → `presentArticle(slug)` (slugs are on the dashboard's Articles page).
 5. Unread badge: `GLSupportChat.unreadCount`.
 6. Push: `Intercom.sendTokenToIntercom` → `GLSupportChat.registerPushToken`; handle `data['type'] == 'message'` on tap.
@@ -213,7 +210,7 @@ flutter pub get && flutter analyze && flutter test
 ```
 
 - `test/controller_test.dart` and `test/widgets_test.dart` run against a pretend server and socket (`test/support/fakes.dart`).
-- `test/attributes_test.dart` covers `setAttributes` against a pretend server.
+- `test/attributes_test.dart` covers what `login` puts in the sign-in body, signed and unverified, against a pretend server.
 - `GL_SCREENSHOTS=1 flutter test test/screenshots_test.dart` renders the main screens to `test/screens/*.png` (gitignored) with real fonts, a look at a change without a phone.
 - `test/live_test.dart` runs against a real API and Socket.IO server, started from the GL Support Chat server repository: `pnpm messenger:live` there prints `GL_LIVE_API=… GL_LIVE_PRODUCT=…`; set both and run `flutter test test/live_test.dart`. Without them it is skipped.
 - The example app (`example/`) has only `lib/` and `pubspec.yaml`; run `flutter create .` inside it once to generate the Android and iOS folders.

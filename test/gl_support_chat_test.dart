@@ -64,8 +64,30 @@ void main() {
     test('nothing usable → null, never an exception', () {
       expect(GLSupportChatIdentity.tryParse(null), isNull);
       expect(GLSupportChatIdentity.tryParse('not a map'), isNull);
-      expect(GLSupportChatIdentity.tryParse({'id': 1}), isNull, reason: 'no hash');
       expect(GLSupportChatIdentity.tryParse({'hash': 'abc'}), isNull, reason: 'no id');
+      expect(GLSupportChatIdentity.tryParse({'id': '  '}), isNull, reason: 'blank id');
+      expect(GLSupportChatIdentity.tryParse({'email': 'a@b.co', 'name': 'Ayesha'}), isNull, reason: 'no id');
+    });
+
+    test('no hash is an unverified identity, not an error', () {
+      final identity = GLSupportChatIdentity.tryParse({'id': 1, 'email': 'a@b.co'});
+      expect(identity, isNotNull);
+      expect(identity!.isVerified, isFalse);
+      expect(identity.hash, isNull);
+      expect(identity.toJson().containsKey('hash'), isFalse);
+      expect(GLSupportChatIdentity.tryParse({'id': 1, 'hash': 123})!.isVerified, isFalse, reason: 'a non-string hash is no hash');
+    });
+
+    test('keys other than the six are ignored', () {
+      final identity = GLSupportChatIdentity.tryParse({
+        'id': 'learner:1',
+        'hash': 'abc',
+        'email': 'a@b.co',
+        'booking_first_name': 'Ayesha',
+        'model': 'Pixel 8',
+      })!;
+      expect(identity.isVerified, isTrue);
+      expect(identity.toJson().keys.toSet(), <String>{'id', 'email', 'hash'});
     });
   });
 
