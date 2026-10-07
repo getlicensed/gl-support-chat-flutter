@@ -1,6 +1,6 @@
 # gl_support_chat
 
-GL Support Chat for the Get Licensed Flutter apps (GuardPass, GuardCheck, GuardSkills, APLH): a native messenger — Home, Messages, Help and the conversation — like Intercom's SDK, on the same API as the website messenger. One package, one chatbot per app; each app's branding (colour, logo, the team faces it shows), articles and suggested questions are set in the GL Support Chat dashboard — Chatbots → the chatbot → Design — and change without a new app build.
+GL Support Chat for the Get Licensed Flutter apps (GuardPass, APLH, CheckProvide, ECert): a native messenger — Home, Messages, Help and the conversation — like Intercom's SDK, on the same API as the website messenger. One package, one chatbot per app; each app's branding (colour, logo, the team faces it shows), articles and suggested questions are set in the GL Support Chat dashboard — Chatbots → the chatbot → Design — and change without a new app build.
 
 > **Built and tested, not yet run on a phone.** `flutter analyze` is clean and the unit, widget and live tests pass (the live test against the real API and Socket.IO server). Send any error from the first build back as it is.
 
@@ -92,6 +92,8 @@ type = learner | employer | trainer_partner
 A numeric `id`, and `null` or `""` for missing fields, are accepted. If the signature is refused, the messenger still opens — anonymously — and `onDiagnostic` reports `identity_rejected` with the reason: fix the backend, nothing in the app.
 
 **Where it comes from in GuardPass and APLH:** the manage-booking response, `data.support_identity` (GuardPass `GET /protect/api/auth/manage-booking`, APLH `GET /api/v1/aplh/elearning/auth/manage-booking`). It is `null` until the backend has that app's secret; pass it to `tryParse` either way.
+
+**CheckProvide and ECert:** their own backends do not return an identity yet. Until they sign the same object, skip `login` — the messenger opens anonymously and everything else works.
 
 ### What the app sent to Intercom, and where it is now
 
