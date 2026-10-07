@@ -108,12 +108,21 @@ final identity = GLSupportChatIdentity.tryParse({
   'id': '220657',                    // required, any non-empty value
   'email': 'ayesha@example.com',
   'name': 'Ayesha Khan',
+  'order_ref': 'A-1042',             // any other key is kept as an extra
 });
 if (identity != null) await GLSupportChat.login(identity);   // identity.isVerified is false
 ```
 
-- **The six fields, and any extra keys.** `id`, `email`, `phone`, `name`, `type` (and `hash` when there is one) are the identity. Any other key in the map (for example `system_version` or `booking_first_name`) is kept in `identity.extra` and sent inside the same `identity` object. Extra keys are never signed, so the server cannot trust them, and one can never replace the six.
-- **The server decides.** Nothing vouches for an unverified identity. A server that only accepts signed identities answers 401, and the plugin then opens the chat anonymously (`identity_rejected` in `onDiagnostic`). A server that accepts them can show the details to the team as unverified.
+That call sends this inside the sign-in body (`POST /widget/auth`), with no `hash`:
+
+```json
+"identity": { "order_ref": "A-1042", "id": "220657", "email": "ayesha@example.com", "name": "Ayesha Khan" }
+```
+
+- **The six fields, and any extra keys.** `id`, `email`, `phone`, `name`, `type` (and `hash` when there is one) are the identity. Any other key in the map is kept in `identity.extra` and sent inside the same `identity` object. Extra keys are never signed, so the server cannot trust them, and one can never replace the six. Values are kept as strings, and blank or `null` values are dropped.
+- **Don't repeat what `device` already sends.** OS, model, manufacturer, app version and build go in `GLSupportChatDevice` in `configure` and travel in the sign-in's `device` block. Leave them out of the identity map.
+- **The server decides.** Nothing vouches for an unverified identity, and a server may refuse it. When it does, the plugin signs the customer in anonymously and `onDiagnostic` reports `identity_rejected` with the server's code, for example `identity_bad_signature` or `identity_malformed`. A server that accepts unverified identities can show the details to the team as unverified.
+- **Check what is sent.** Print `identity.toJson()` before calling `login`, or watch the request in a network proxy. `onDiagnostic` shows the server's answer.
 - **Not shared across devices.** Only a signed identity (`identity.isVerified`) can join the customer to their history across devices and channels.
 - **The browser link** from `messengerUrl()` carries a signed identity only.
 
