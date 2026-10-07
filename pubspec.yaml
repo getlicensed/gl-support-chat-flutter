@@ -1,0 +1,32 @@
+name: gl_support_chat
+description: GL Support Chat messenger for the Get Licensed Flutter apps (GuardPass, GuardCheck, GuardSkills, APLH) — native Flutter screens (Home, Messages, Help), realtime chat, photos, signed identity, unread badge and push token registration.
+version: 0.4.1
+publish_to: none
+
+environment:
+  # Kept as low as the dependencies allow, so an app is not forced onto a
+  # newer Flutter to take this package: each range below lets pub pick an
+  # older release on an older SDK.
+  sdk: ">=3.5.0 <4.0.0"
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Article bodies (sanitised HTML from the help centre), drawn natively.
+  flutter_widget_from_html_core: ">=0.15.0 <0.18.0"
+  http: ^1.2.2
+  # Photos from the library or the camera — what support asks customers for.
+  image_picker: ">=1.0.7 <2.0.0"
+  # The anonymous visitor id, so an anonymous chat survives an app restart.
+  shared_preferences: ">=2.2.0 <3.0.0"
+  # The server is Socket.IO 4.
+  socket_io_client: ">=3.0.0 <4.0.0"
+  url_launcher: ^6.2.0
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:

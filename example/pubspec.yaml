@@ -1,0 +1,16 @@
+name: gl_support_chat_example
+description: Minimal host app for gl_support_chat. Run `flutter create .` here once to generate the platform folders.
+publish_to: none
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  gl_support_chat:
+    path: ../
+
+flutter:
+  uses-material-design: true

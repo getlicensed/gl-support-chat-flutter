@@ -1,0 +1,11 @@
+# Written by `flutter pub get` / `flutter test`. A library package leaves
+# pubspec.lock to the app that depends on it.
+.dart_tool/
+build/
+pubspec.lock
+example/.dart_tool/
+example/build/
+example/pubspec.lock
+
+# Screens rendered by test/screenshots_test.dart for a look, not for comparison.
+test/screens/
