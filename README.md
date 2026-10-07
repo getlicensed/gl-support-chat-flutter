@@ -122,6 +122,13 @@ That call sends this inside the sign-in body (`POST /widget/auth`), with no `has
 - **The six fields, and any extra keys.** `id`, `email`, `phone`, `name`, `type` (and `hash` when there is one) are the identity. Any other key in the map is kept in `identity.extra` and sent inside the same `identity` object. Extra keys are never signed, so the server cannot trust them, and one can never replace the six. Values are kept as strings, and blank or `null` values are dropped.
 - **Don't repeat what `device` already sends.** OS, model, manufacturer, app version and build go in `GLSupportChatDevice` in `configure` and travel in the sign-in's `device` block. Leave them out of the identity map.
 - **The server decides.** Nothing vouches for an unverified identity, and a server may refuse it. When it does, the plugin signs the customer in anonymously and `onDiagnostic` reports `identity_rejected` with the server's code, for example `identity_bad_signature` or `identity_malformed`. A server that accepts unverified identities can show the details to the team as unverified.
+- **On GL Support Chat** (Get Licensed's server, 7 Oct): an identity without a `hash` is refused (`identity_malformed`), extras or not. Beside a **signed** identity the extra keys are kept as details on the conversation, shown to the team as sent by the app (not verified) and never used to find or join a customer: up to 20, keys as snake_case words, one line of 200 characters each. To send them, add them to the backend's object without touching its six fields, then parse it:
+
+  ```dart
+  final raw = Map<String, dynamic>.from(response['data']['support_identity']);
+  raw.addAll({'booking_first_name': first, 'booking_last_name': last, 'staffing_id': staffingId});
+  final identity = GLSupportChatIdentity.tryParse(raw); // still verified: the hash covers only the six
+  ```
 - **Check what is sent.** Print `identity.toJson()` before calling `login`, or watch the request in a network proxy. `onDiagnostic` shows the server's answer.
 - **Not shared across devices.** Only a signed identity (`identity.isVerified`) can join the customer to their history across devices and channels.
 - **The browser link** from `messengerUrl()` carries a signed identity only.
