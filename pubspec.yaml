@@ -1,6 +1,6 @@
 name: gl_support_chat
 description: GL Support Chat messenger for the Get Licensed Flutter apps (GuardPass, GuardCheck, GuardSkills, APLH) — native Flutter screens (Home, Messages, Help), realtime chat, photos, signed identity, unread badge and push token registration.
-version: 0.4.1
+version: 0.4.2
 publish_to: none
 
 environment:

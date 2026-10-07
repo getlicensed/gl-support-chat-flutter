@@ -220,7 +220,8 @@ class _Header extends StatelessWidget {
             children: [
               RoundIconButton(icon: Icons.chevron_left, tooltip: 'Back', light: true, size: 32, onTap: () => Navigator.of(context).maybePop()),
               const SizedBox(width: 10),
-              if (hasTeam) const TeamFaces(size: 30, border: 1.5) else InitialAvatar(label: s?.productLabel ?? '?', size: 34),
+              // The faces the admin chose (or none): then the chatbot's logo.
+              if (hasTeam) const TeamFaces(size: 30, border: 1.5) else LogoAvatar(label: s?.productLabel ?? '?', size: 34),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -347,6 +348,9 @@ class _AuthorRow extends StatelessWidget {
     final Widget avatar;
     if (authorType == 'ai') {
       avatar = InitialAvatar(label: name, size: 22, icon: Icons.smart_toy_outlined);
+    } else if (authorType == 'bot') {
+      // The workflow speaks as the chatbot: its logo, as Intercom shows the brand beside the bot.
+      avatar = LogoAvatar(label: name, size: 22);
     } else if (authorType == 'agent' && authorId != null && RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(authorId!)) {
       avatar = PersonAvatar(name: name, photoPath: '/widget/avatar/$authorId', size: 22);
     } else {
@@ -1270,6 +1274,9 @@ class _ComposerState extends State<_Composer> {
     final c = context.messenger;
     final brand = c.brand;
     final lock = c.composerLock;
+    // Waiting on a button or a detail above: no composer at all, as in
+    // Intercom — it comes back the moment typing is allowed.
+    if (lock != null) return SizedBox(height: MediaQuery.of(context).padding.bottom);
     final online = c.link == LinkState.connected;
     final canSend = lock == null && online && _text.text.trim().isNotEmpty;
     return Container(

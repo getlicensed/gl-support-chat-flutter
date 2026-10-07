@@ -166,6 +166,37 @@ class PersonAvatar extends StatelessWidget {
   }
 }
 
+/// The chatbot's logo in a circle — on white, whole whatever its shape — for
+/// the bot's messages and the chat header, as Intercom shows the brand beside
+/// the bot. No logo, or one that does not load: the initial.
+class LogoAvatar extends StatelessWidget {
+  const LogoAvatar({super.key, required this.label, this.size = 28});
+
+  final String label;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final fallback = InitialAvatar(label: label, size: size);
+    final logo = context.messenger.session?.logoUrl;
+    if (logo == null) return fallback;
+    return Container(
+      width: size,
+      height: size,
+      padding: EdgeInsets.all(size * 0.12),
+      decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+      child: ClipOval(
+        child: Image.network(
+          logo,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => fallback,
+          frameBuilder: (_, child, frame, sync) => frame == null && !sync ? fallback : child,
+        ),
+      ),
+    );
+  }
+}
+
 /// Up to three team faces, overlapping, as on Home and in the chat header.
 class TeamFaces extends StatelessWidget {
   const TeamFaces({super.key, this.size = 40, this.border = 2});

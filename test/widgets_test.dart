@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gl_support_chat/src/core/controller.dart';
 import 'package:gl_support_chat/src/messenger_page.dart';
+import 'package:gl_support_chat/src/ui/common.dart';
 
 import 'support/fakes.dart';
 
@@ -95,7 +96,7 @@ void main() {
     expect(find.text('Try again'), findsOneWidget);
   });
 
-  testWidgets('workflow buttons under the live question; the composer waits', (tester) async {
+  testWidgets('workflow buttons under the live question; no composer until typing is allowed', (tester) async {
     server.openInfo = <String, dynamic>{'conversationId': 'conv-1', 'unreadCount': 1};
     server.conversations = <Map<String, dynamic>>[row('conv-1', unread: 1)];
     server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
@@ -110,11 +111,27 @@ void main() {
     await open(tester, screen: GLSupportChatScreen.messages);
     await settle(tester);
     expect(find.text('Which course is it about?'), findsOneWidget, reason: 'unread replies open the conversation from a push tap');
-    expect(find.text('Choose an option above'), findsOneWidget);
+    // As in Intercom: no composer at all while the buttons wait (7 Oct) — not a greyed-out one.
+    expect(find.byType(TextField), findsNothing);
+    expect(find.byTooltip('Send a photo'), findsNothing);
     await tester.tap(find.text('CCTV'));
     await tester.pump();
     expect(channel.requests.last.$1, 'workflow:choose');
     expect(channel.requests.last.$2, <String, dynamic>{'conversationId': 'conv-1', 'promptId': 'p1', 'buttonId': 'b2'});
+  });
+
+  testWidgets("the chatbot's logo beside the bot, and in the header when no faces are chosen", (tester) async {
+    server.session = <String, dynamic>{...server.session, 'team': <Object?>[], 'logoUrl': 'https://logo.test/gl.png'};
+    server.openInfo = <String, dynamic>{'conversationId': 'conv-1', 'unreadCount': 1};
+    server.conversations = <Map<String, dynamic>>[row('conv-1', unread: 1)];
+    server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
+      msg('p1', 'bot', 'Hello 👋 How can we help?'),
+      msg('a1', 'agent', 'Hi, Levi here.'),
+    ]);
+    await open(tester, screen: GLSupportChatScreen.messages);
+    await settle(tester);
+    // One in the header (the admin chose nobody's face), one beside the bot; the agent keeps a person's avatar.
+    expect(find.byType(LogoAvatar), findsNWidgets(2));
   });
 
   testWidgets('Messages: every conversation; a closed one reads but does not reply', (tester) async {

@@ -1,3 +1,9 @@
+## 0.4.2
+
+- **The chatbot's logo beside the bot.** The workflow's messages carry the chatbot's logo (Chatbots → Design → Logo URL), and so does the chat header when the admin has chosen to show nobody's face — on white, whole whatever its shape; the initial when there is no logo. Agents keep their photos.
+- **No composer while the bot waits on a button**, as in Intercom: it is hidden — not greyed out — until typing is allowed again.
+- The team faces now follow the chatbot's Design page (Automatic / chosen / nobody); nothing to change in the app.
+
 ## 0.4.1
 
 - **Its own repository** (7 Oct): `github.com/getlicensed/gl-support-chat-flutter`. An app changes only its pubspec — this `url`, `ref: v0.4.1`, and no `path` — see the README. The code is the same.

@@ -22,7 +22,7 @@ dependencies:
   gl_support_chat:
     git:
       url: https://github.com/getlicensed/gl-support-chat-flutter.git
-      ref: v0.4.1
+      ref: v0.4.2
 ```
 
 Pin a tag (`ref`) so a build only changes when you move it; the versions are in [`CHANGELOG.md`](CHANGELOG.md).
