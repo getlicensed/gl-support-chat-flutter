@@ -150,7 +150,7 @@ FirebaseMessaging.onMessageOpenedApp.listen((m) {
 });
 ```
 
-Push reaches **identified** users only (`registerPushToken` waits for `login`). Notifications collapse per conversation; the token is detached on `logout()`. Pushes are sent for agent replies, AI answers and hand-over lines in messenger conversations; email and WhatsApp conversations never push. The messenger plays no sound of its own — the push is the alert. The server side (the Firebase project the four apps share) is set up by the GL Support Chat team.
+Push reaches **identified** users only (`registerPushToken` waits for `login`). Notifications collapse per conversation; the token is detached on `logout()`. Pushes are sent for agent replies, AI answers and hand-over lines in messenger conversations; email and WhatsApp conversations never push. The messenger plays no sound of its own — the push is the alert. The server side is set up by the GL Support Chat team. Each app keeps its own Firebase project (with its APNs key); the server needs a service-account key from that project, so give the team one from yours.
 
 ## 6. Replacing the Intercom SDK — per app
 
