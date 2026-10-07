@@ -165,7 +165,7 @@ At least one iPhone and one Android phone, each app.
 - ▢ Signed out (sign-in screen entry): a message reaches the inbox anonymously; sign in → the same conversation is in their Messages.
 - ▢ An agent replies while the conversation is open: it appears at once; typing dots before it; ✓✓ once the agent has read the customer's message.
 - ▢ A workflow button and a detail it asks for (email): both reach the inbox; a wrong email shows the reason under the box. Under the buttons there is no composer; it appears once the workflow lets the customer type.
-- ▢ The workflow's messages show the chatbot's logo (Design → Logo URL); Home and the header show the team faces chosen on the Design page.
+- ▢ The workflow's messages show the chatbot's logo (Design → Logo: uploaded there, or an https link); Home and the header show the team faces chosen on the Design page.
 - ▢ **Photo**: library and camera, on both phones (the iPhone permission prompts appear once); the photo shows in the inbox thread and in the app.
 - ▢ Close the conversation from the inbox: the CSAT faces appear; rate and comment; the rating shows in the inbox.
 - ▢ Messages: the closed conversation reads in full, with **Send us a message**.
