@@ -1,3 +1,7 @@
+## Unreleased
+
+- **`GLSupportChat.setAttributes(Map<String, String>)`** — unverified, display-only details about the customer (name, email, booking id and the like), sent with the sign-in as `attributes` next to `device`. Never signed and never used to decide who the customer is, so it needs no hash and works for a signed-in customer or a guest. Blank keys and values are dropped and at most 20 entries are kept. Sent at once if the customer is already signed in to the chat, otherwise with the next sign-in. `logout()` clears it. **Needs the server to accept `attributes` on `POST /widget/auth`**; an older server ignores it.
+
 ## 0.4.2
 
 - **The chatbot's logo beside the bot.** The workflow's messages carry the chatbot's logo (Chatbots → Design → Logo — uploaded there since 7 Oct, or an https link), and so does the chat header when the admin has chosen to show nobody's face — on white, whole whatever its shape; the initial when there is no logo. Agents keep their photos.

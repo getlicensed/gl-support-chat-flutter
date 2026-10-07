@@ -68,13 +68,14 @@ class MessengerApi {
     String? visitorId,
     Map<String, dynamic>? identity,
     Map<String, String>? device,
+    Map<String, String>? attributes,
     void Function(String code, String message)? onIdentityRejected,
   }) async {
-    var res = await _postAuth(visitorId: visitorId, identity: identity, device: device);
+    var res = await _postAuth(visitorId: visitorId, identity: identity, device: device, attributes: attributes);
     if (res.statusCode == 401 && identity != null) {
       final body = _decode(res.body);
       onIdentityRejected?.call('${body['code'] ?? 'identity_rejected'}', '${body['error'] ?? ''}');
-      res = await _postAuth(visitorId: visitorId, device: device);
+      res = await _postAuth(visitorId: visitorId, device: device, attributes: attributes);
     }
     if (res.statusCode != 200) {
       final body = _decode(res.body);
@@ -87,12 +88,18 @@ class MessengerApi {
     return session;
   }
 
-  Future<http.Response> _postAuth({String? visitorId, Map<String, dynamic>? identity, Map<String, String>? device}) async {
+  Future<http.Response> _postAuth({
+    String? visitorId,
+    Map<String, dynamic>? identity,
+    Map<String, String>? device,
+    Map<String, String>? attributes,
+  }) async {
     final body = jsonEncode(<String, dynamic>{
       'productId': productId,
       if (visitorId != null && visitorId.isNotEmpty) 'visitorId': visitorId,
       if (identity != null) 'identity': identity,
       if (device != null && device.isNotEmpty) 'device': device,
+      if (attributes != null && attributes.isNotEmpty) 'attributes': attributes,
     });
     for (var attempt = 0;; attempt++) {
       final last = attempt >= retryDelays.length;

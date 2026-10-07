@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show mapEquals;
 import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 
@@ -111,6 +112,7 @@ class GLSupportChat {
   static String? _appId;
   static GLSupportChatDevice? _device;
   static GLSupportChatIdentity? _identity;
+  static Map<String, String> _attributes = const <String, String>{};
   static String? _pushToken;
   static String? _pushPlatform;
   static Timer? _pollTimer;
@@ -196,6 +198,37 @@ class GLSupportChat {
     }
   }
 
+  /// Details about the customer for the team to see, such as
+  /// `{'email': …, 'name': …, 'booking_id': …}`. They are sent with the
+  /// sign-in as `attributes`: unverified and display-only, never signed and
+  /// never used to decide who the customer is. Replaces whatever was set
+  /// before; an empty map clears it. Blank keys and values are dropped and at
+  /// most [maxAttributes] entries are kept.
+  ///
+  /// If the customer is already signed in to the chat, the new details are
+  /// sent at once. Otherwise they go with the next sign-in. Cleared by
+  /// [logout]. Never throws.
+  static Future<void> setAttributes(Map<String, String> attributes) async {
+    final cleaned = <String, String>{};
+    for (final entry in attributes.entries) {
+      final key = entry.key.trim();
+      final value = entry.value.trim();
+      if (key.isEmpty || value.isEmpty || cleaned.length >= maxAttributes) continue;
+      cleaned[key] = value;
+    }
+    if (mapEquals(cleaned, _attributes)) return;
+    _attributes = cleaned;
+    final api = _api;
+    if (api == null || api.token == null) return;
+    api.token = null;
+    try {
+      await _authenticateInBackground();
+    } catch (_) {}
+  }
+
+  /// The most [setAttributes] keeps; the rest are dropped.
+  static const int maxAttributes = 20;
+
   /// The user signed out: forget the identity, detach the device, and start
   /// the next customer on this phone as a new anonymous visitor. Returns at
   /// once; detaching the push token finishes in the background.
@@ -204,6 +237,7 @@ class GLSupportChat {
     final push = _pushToken;
     final bearer = api?.token;
     _identity = null;
+    _attributes = const <String, String>{};
     _authFailures = 0;
     _authPausedUntil = null;
     _emitUnread(0);
@@ -333,6 +367,7 @@ class GLSupportChat {
       visitorId: stored,
       identity: _identity?.toJson(),
       device: device.isEmpty ? null : device,
+      attributes: _attributes.isEmpty ? null : _attributes,
       onIdentityRejected: (code, _) => _diag('identity_rejected', <String, Object?>{'code': code}),
     );
     if (session.visitorId.isNotEmpty && session.visitorId != stored) await _store.saveVisitorId(product, session.visitorId);

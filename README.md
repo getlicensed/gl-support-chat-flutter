@@ -1,8 +1,8 @@
 # gl_support_chat
 
-GL Support Chat for the Get Licensed Flutter apps (GuardPass, APLH, CheckProvide, ECert): a native messenger — Home, Messages, Help and the conversation — like Intercom's SDK, on the same API as the website messenger. One package, one chatbot per app; each app's branding (colour, logo, the team faces it shows), articles and suggested questions are set in the GL Support Chat dashboard — Chatbots → the chatbot → Design — and change without a new app build.
+A Flutter SDK for the GL Support Chat messenger: a native Home, Messages, Help and conversation, like Intercom's SDK, talking to the same API as the website messenger. One package, one chatbot per app. Each app's branding (colour, logo, the team faces it shows), articles and suggested questions are set in the GL Support Chat dashboard (Chatbots → the chatbot → Design) and change without a new app build.
 
-> **Built and tested, not yet run on a phone.** `flutter analyze` is clean and the unit, widget and live tests pass (the live test against the real API and Socket.IO server). Send any error from the first build back as it is.
+> **Built and tested, not yet run on a phone.** `flutter analyze` is clean and the unit, widget and live tests pass (the live test against a real API and Socket.IO server). Send any error from the first build back as it is.
 
 ## 0. Requirements
 
@@ -10,14 +10,15 @@ GL Support Chat for the Get Licensed Flutter apps (GuardPass, APLH, CheckProvide
 |---|---|
 | Flutter / Dart | **≥ 3.24 / ≥ 3.5**. Every dependency has a range that still resolves there; on a newer Flutter pub picks newer releases |
 | Dependencies it brings | `socket_io_client` 3.x, `image_picker` 1.x, `shared_preferences` 2.x, `flutter_widget_from_html_core` 0.15–0.17, `http`, `url_launcher` |
-| iOS | Two strings in the app's `Info.plist` for photos — without them iOS ends the app when the customer taps the photo button: `NSPhotoLibraryUsageDescription` (e.g. "Send a photo to support, like your licence") and `NSCameraUsageDescription` (e.g. "Take a photo to send to support") |
+| iOS | Two strings in the app's `Info.plist` for photos. Without them iOS ends the app when the customer taps the photo button: `NSPhotoLibraryUsageDescription` (e.g. "Send a photo to support") and `NSCameraUsageDescription` (e.g. "Take a photo to send to support") |
 | Android | `minSdkVersion 21` or higher. Nothing to add for photos: the system picker needs no permission. Only if the app itself declares `CAMERA` in its manifest does Android ask the customer before the camera opens |
 | Push | Notification channel `gl_support_chat` (Android) |
+| Server | A running GL Support Chat server, and a chatbot created on it for your app (you need its id) |
 
 ## 1. Add it
 
 ```yaml
-# pubspec.yaml of the app
+# pubspec.yaml of your app
 dependencies:
   gl_support_chat:
     git:
@@ -25,20 +26,22 @@ dependencies:
       ref: v0.4.2
 ```
 
-Pin a tag (`ref`) so a build only changes when you move it; the versions are in [`CHANGELOG.md`](CHANGELOG.md).
+Pin a tag (`ref`) so a build only changes when you move it. The versions and what changed in each are in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## 2. Configure, sign in, show
 
 ```dart
 await GLSupportChat.configure(
-  apiUrl: 'https://support-api.get-licensed.co.uk',
-  productId: '<this app\'s chatbot id — Chatbots → the chatbot → Install>',
-  // This platform's own id — Android's applicationId, iOS's bundle id, so they differ:
+  // The base URL of your GL Support Chat server.
+  apiUrl: 'https://support-api.example.com',
+  // This app's chatbot id (Chatbots → the chatbot → Install).
+  productId: '<your chatbot id>',
+  // This platform's own id: Android's applicationId, iOS's bundle id, so they differ.
   // package_info_plus gives it as packageName. Shown to the team; never used to route.
   appId: packageInfo.packageName,
   // Shown to the team on each conversation: "iOS 17.4 · iPhone 15 Pro · v3.4.0 (412)".
-  // Fill it from what the app already uses (device_info_plus, package_info_plus);
-  // the package adds the platform and appId. Display only — never signed, never trusted.
+  // Fill it from what your app already uses (device_info_plus, package_info_plus);
+  // the package adds the platform and appId. Display only: never signed, never trusted.
   device: GLSupportChatDevice(
     os: 'iOS ${iosInfo.systemVersion}',          // or 'Android ${androidInfo.version.release}'
     model: iosInfo.utsname.machine,              // or androidInfo.model
@@ -46,18 +49,19 @@ await GLSupportChat.configure(
     appVersion: packageInfo.version,
     appBuild: packageInfo.buildNumber,
   ),
-  // What the customer is offered if the chat cannot load. None of it needs the chat servers.
+  // What the customer is offered if the chat cannot load. None of it needs the chat server.
+  // Set your own email: the package's built-in default is the maintainer's address.
   fallback: const GLSupportChatFallback(
-    email: 'we.care@get-licensed.co.uk',          // the default
-    whatsappNumber: null,                         // the real support number, once it is on GL Support Chat
-    phoneNumber: null,                            // if customers may call
-    helpUrl: 'https://support.get-licensed.co.uk/help',
+    email: 'support@example.com',
+    whatsappNumber: null,                        // your support WhatsApp number, if you have one
+    phoneNumber: null,                           // if customers may call
+    helpUrl: 'https://help.example.com',
   ),
   // Forward to Crashlytics / Sentry: "support did not open" becomes a number you can see.
   onDiagnostic: (event, detail) => FirebaseCrashlytics.instance.log('support $event $detail'),
 );
 
-// After your sign-in, with the identity YOUR backend signed (never in the app).
+// Optional: after your own sign-in, with the identity YOUR backend signed (never in the app).
 // tryParse never throws; login never throws and never blocks sign-in for long.
 final identity = GLSupportChatIdentity.tryParse(profile['support_identity']);
 if (identity != null) await GLSupportChat.login(identity);
@@ -67,55 +71,62 @@ GLSupportChat.unreadCount.listen((n) => setState(() => unread = n));
 
 // Open
 GLSupportChat.present(context);                                       // Home
-GLSupportChat.present(context, screen: GLSupportChatScreen.messages); // the list — or straight into the open conversation if it has unread replies
+GLSupportChat.present(context, screen: GLSupportChatScreen.messages); // the list, or straight into the open conversation if it has unread replies
 GLSupportChat.presentHelp(context);
-GLSupportChat.presentArticle(context, 'how-do-i-renew-my-sia-licence');
+GLSupportChat.presentArticle(context, 'how-do-i-reset-my-password');
 
 // Sign-out (returns at once). The next person on this phone starts as a new visitor.
 await GLSupportChat.logout();
 ```
 
-**Android and iOS:** the same `productId` on both — one chatbot per app, so a customer's conversations are the same whichever phone they use — and each platform's own `appId`. `appId` is optional: it labels the device and the push token for the team (the conversation's device chip says which app build wrote), and nothing depends on it.
+**Android and iOS:** use the same `productId` on both (one chatbot per app, so a customer's conversations are the same whichever phone they use) and each platform's own `appId`. `appId` is optional: it labels the device and the push token for the team (the conversation's device chip says which app build wrote), and nothing depends on it.
 
-**Put a "Contact support" entry on the sign-in screen too.** "I can't log in" is one of the most common reasons to contact support, and those customers have no identity yet — `present` without `login` opens the messenger anonymously. An anonymous chat is kept on the phone (per chatbot) and becomes the customer's own history when they sign in.
+**Offer support before sign-in too.** "I can't log in" is one of the most common reasons to contact support, and those customers have no identity yet. `present` without `login` opens the messenger anonymously. An anonymous chat is kept on the phone (per chatbot) and becomes the customer's own history when they sign in.
 
 ### The identity
 
-The app's backend signs it and sends it in the profile response; the app only passes it on. The signing secret is the chatbot's (Chatbots → the chatbot → Install) and never goes in the app.
+The identity tells the server who the customer is, so their name, email and history are one contact. **Your backend signs it** and returns it (for example in the profile or sign-in response); the app only passes it on. The signing secret belongs to the chatbot (Chatbots → the chatbot → Install) and never goes in the app.
 
 ```
 { id, email?, phone?, type?, name?, hash }
-hash = HMAC-SHA256(secret, "id|email|phone|type|name")   — hex; a missing field is an empty string
-type = learner | employer | trainer_partner
+id   = a unique, stable id for the customer in your system, as a string
+hash = HMAC-SHA256(secret, "id|email|phone|type|name")   (hex; a missing field is an empty string)
+type = optional, one of the customer types the server accepts: learner | employer | trainer_partner
 ```
 
-A numeric `id`, and `null` or `""` for missing fields, are accepted. If the signature is refused, the messenger still opens — anonymously — and `onDiagnostic` reports `identity_rejected` with the reason: fix the backend, nothing in the app.
+Sign the values exactly as you send them. A numeric `id`, and `null` or `""` for missing fields, are accepted. Only those six fields are read and signed: extra fields in the object are dropped, and changing any of the six after signing (reformatting the phone, trimming the name, rebuilding the object) breaks the signature, so pass the object to `tryParse` unchanged.
 
-**Where it comes from in GuardPass and APLH:** the manage-booking response, `data.support_identity` (GuardPass `GET /protect/api/auth/manage-booking`, APLH `GET /api/v1/aplh/elearning/auth/manage-booking`). It is `null` until the backend has that app's secret; pass it to `tryParse` either way.
+If the signature is refused, the messenger still opens, anonymously, and `onDiagnostic` reports `identity_rejected` with the reason: fix the backend, nothing in the app. If your backend has no identity for a customer, skip `login`: the messenger opens anonymously and everything else works.
 
-**CheckProvide and ECert:** their own backends do not return an identity yet. Until they sign the same object, skip `login` — the messenger opens anonymously and everything else works.
+### Extra details about the customer (`setAttributes`)
 
-### What the app sent to Intercom, and where it is now
+Use this to show the support team more about the customer than the identity carries, such as a name, an email, an order number or a plan. The values are **unverified and display-only**: they are not signed, so the server never uses them to decide who the customer is. That means no hash and no backend signing. Use [`login`](#the-identity) when you need a verified customer.
 
-The booking travels **inside the signed identity**, filled in by the backend from the booking — the app does not send it separately:
+```dart
+await GLSupportChat.setAttributes({
+  'email': 'ayesha@example.com',
+  'name': 'Ayesha Khan',
+  'order_id': '220657',
+  'plan': 'premium',
+});
+```
 
-| Sent to Intercom from the app | In GL Support Chat |
-|---|---|
-| `email`, `name` | the identity's `email` and `name`, from the booking |
-| `user_hash` (made on the phone) | the identity's `hash`, made by the backend — the app never signs anything |
-| `custom_attributes.booking_id` | the identity's `id`: `learner:<booking id>` (`stg:learner:<booking id>` on staging) |
-| `custom_attributes.booking_first_name`, `booking_last_name` | the identity's `name`: `"<first name> <last name>"` |
-| `custom_attributes.system_version`, `version`, `manufacturer`, `model` | `GLSupportChatDevice(os:, appVersion:, manufacturer:, model:, appBuild:)` in `configure` (§2) |
+- **Plain strings.** `Map<String, String>`, whatever keys your app finds useful.
+- **When it is sent.** With the sign-in, as `attributes`, next to `identity` and `device`. If the customer is already signed in to the chat, the new values are sent at once. Otherwise they go with the next sign-in, so call it before or after `login`, or without `login` for a guest.
+- **Replace, not merge.** Each call replaces the previous map. Pass an empty map to clear it.
+- **Tidied for you.** Keys and values are trimmed, blank ones are dropped, and at most `GLSupportChat.maxAttributes` (20) entries are kept.
+- **Cleared on sign-out.** `logout()` forgets them, so the next person on the phone starts clean.
+- **Never throws.** A failed send is reported through `onDiagnostic`, like any sign-in.
 
-So for the booking the app does one thing: pass `data.support_identity` to `tryParse` **unchanged**. Only the six fields above are read and signed: extra fields added to the object are dropped, and changing any of the six (formatting the phone, trimming the name, rebuilding the object) breaks the signature. The team sees the name and a Learner chip on the conversation, and the booking itself — course, dates, payment — in the inbox's customer panel, looked up from GL Admin by that `id`.
+The server must accept `attributes` on `POST /widget/auth` and show them to the team. A server that does not simply ignores them.
 
 ## 3. What the customer sees
 
 | Screen | What is on it |
 |---|---|
-| Home | The chatbot's logo, the team faces the admin chose (Design → Team faces: automatic, chosen, or nobody), greeting ("Hi Ayesha 👋" when signed in), **Send us a message** with the team's status (online · back tomorrow at 9am · we'll reply by email), the **recent message**, help search and the top five articles |
+| Home | The chatbot's logo, the team faces the admin chose (Design → Team faces: automatic, chosen, or nobody), a greeting ("Hi Ayesha 👋" when signed in), **Send us a message** with the team's status (online · back tomorrow at 9am · we'll reply by email), the **recent message**, help search and the top five articles |
 | Messages | Every conversation with this app's chatbot, newest first: preview, who, when, unread dot, "Closed". **Send us a message** at the bottom |
-| Conversation | The header shows the team faces, or the chatbot's logo when none are shown. The team's replies with their name and photo, the workflow's messages beside the chatbot's logo, photos and files the team sends, AI answers (typed out as they stream), the workflow's buttons and questions, CSAT faces after a close, ✓ / ✓✓, "New messages", typing dots both ways. The composer takes text and photos (library or camera); **while the workflow waits on a button or a detail it asked for there is no composer at all**, as in Intercom — it comes back when typing is allowed. While nobody is online and the customer has no email on record: "Your email for follow-up". A closed conversation reads in full, with **Send us a message** instead of a composer |
+| Conversation | The header shows the team faces, or the chatbot's logo when none are shown. The team's replies with their name and photo, the workflow's messages beside the chatbot's logo, photos and files the team sends, AI answers (typed out as they stream), the workflow's buttons and questions, CSAT faces after a close, ✓ / ✓✓, "New messages", typing dots both ways. The composer takes text and photos (library or camera); **while the workflow waits on a button or a detail it asked for there is no composer at all**, as in Intercom, and it comes back when typing is allowed. While nobody is online and the customer has no email on record: "Your email for follow-up". A closed conversation reads in full, with **Send us a message** instead of a composer |
 | Help | Search (instant, then full text from the server) and the articles, drawn natively; links open in the browser |
 
 ## 4. When something goes wrong
@@ -136,7 +147,7 @@ Nothing here leaves a customer on a blank screen, an error page, or a dead butto
 
 `onDiagnostic` events: `messenger_ready {ms}`, `messenger_failed {reason, detail}`, `auth_failed {status, detail, failures}` (badge and push calls), `identity_rejected {code}`.
 
-## 5. Push — "an agent replied" on the lock screen
+## 5. Push: "an agent replied" on the lock screen
 
 ```dart
 // with firebase_messaging
@@ -150,38 +161,41 @@ FirebaseMessaging.onMessageOpenedApp.listen((m) {
 });
 ```
 
-Push reaches **identified** users only (`registerPushToken` waits for `login`). Notifications collapse per conversation; the token is detached on `logout()`. Pushes are sent for agent replies, AI answers and hand-over lines in messenger conversations; email and WhatsApp conversations never push. The messenger plays no sound of its own — the push is the alert. The server side (the Firebase project the four apps share) is set up by the GL Support Chat team.
+Push reaches **identified** users only (`registerPushToken` waits for `login`). Notifications collapse per conversation; the token is detached on `logout()`. Pushes are sent for agent replies, AI answers and hand-over lines in messenger conversations; email and WhatsApp conversations never push. The messenger plays no sound of its own: the push is the alert. Use the FCM token on iOS too, not the raw APNs token. The server side (a Firebase project with your APNs key, and its service account on the server) is set up on the GL Support Chat server.
 
-## 6. Replacing the Intercom SDK — per app
+## 6. Migrating from another chat SDK
+
+The calls map across like this (shown for Intercom; other SDKs are similar):
 
 1. Add the package (§1) and the two iOS strings (§0).
-2. `Intercom.loginIdentifiedUser` → `GLSupportChat.login(GLSupportChatIdentity.tryParse(...))` with `data.support_identity`; Intercom's `custom_attributes` are not sent — see "What the app sent to Intercom" (§2).
-3. `Intercom.displayMessenger()` → `GLSupportChat.present(context)`; `displayHelpCenter` → `presentHelp`; `displayArticle(id)` → `presentArticle(slug)` (slugs from the dashboard's Articles page).
-4. Unread badge: `GLSupportChat.unreadCount`.
-5. Push: `Intercom.sendTokenToIntercom` → `GLSupportChat.registerPushToken`; handle `data['type'] == 'message'` on tap.
-6. `Intercom.logout()` → `GLSupportChat.logout()`.
-7. A "Contact support" entry on the sign-in screen (anonymous).
-8. Remove the Intercom pod / gradle dependency.
+2. Identify the user: `Intercom.loginIdentifiedUser` → `GLSupportChat.login(GLSupportChatIdentity.tryParse(...))` with an identity your backend signed. Intercom's `user_hash`, which an app often computed on the phone, becomes the identity's `hash`, made by the backend.
+3. Custom attributes: `custom_attributes` → [`setAttributes`](#extra-details-about-the-customer-setattributes) for details about the customer, and `GLSupportChatDevice` in `configure` for device and app details (OS, model, manufacturer, version, build).
+4. Open: `Intercom.displayMessenger()` → `GLSupportChat.present(context)`; `displayHelpCenter` → `presentHelp`; `displayArticle(id)` → `presentArticle(slug)` (slugs are on the dashboard's Articles page).
+5. Unread badge: `GLSupportChat.unreadCount`.
+6. Push: `Intercom.sendTokenToIntercom` → `GLSupportChat.registerPushToken`; handle `data['type'] == 'message'` on tap.
+7. Sign out: `Intercom.logout()` → `GLSupportChat.logout()`. Call it on sign-out only, not before every chat tap, or an anonymous visitor starts an empty conversation each time.
+8. Add a "Contact support" entry on the sign-in screen (anonymous).
+9. Remove the old SDK's pod / gradle dependency.
 
-## 7. Before submitting a build — test on real phones
+## 7. Before submitting a build: test on real phones
 
-At least one iPhone and one Android phone, each app.
+At least one iPhone and one Android phone.
 
-- ▢ Signed in: Home greets by first name; a message reaches the inbox with the customer's name and type.
-- ▢ Signed out (sign-in screen entry): a message reaches the inbox anonymously; sign in → the same conversation is in their Messages.
+- ▢ Signed in: Home greets by first name; a message reaches the inbox with the customer's name.
+- ▢ Signed out (sign-in screen entry): a message reaches the inbox anonymously; sign in, and the same conversation is in their Messages.
 - ▢ An agent replies while the conversation is open: it appears at once; typing dots before it; ✓✓ once the agent has read the customer's message.
 - ▢ A workflow button and a detail it asks for (email): both reach the inbox; a wrong email shows the reason under the box. Under the buttons there is no composer; it appears once the workflow lets the customer type.
 - ▢ The workflow's messages show the chatbot's logo (Design → Logo: uploaded there, or an https link); Home and the header show the team faces chosen on the Design page.
 - ▢ **Photo**: library and camera, on both phones (the iPhone permission prompts appear once); the photo shows in the inbox thread and in the app.
 - ▢ Close the conversation from the inbox: the CSAT faces appear; rate and comment; the rating shows in the inbox.
 - ▢ Messages: the closed conversation reads in full, with **Send us a message**.
-- ▢ **Airplane mode** → open support: the fallback screen; *Email us* opens the mail app; network back → *Try again* opens the messenger.
-- ▢ Airplane mode **inside** a conversation: "Reconnecting…"; an agent replies meanwhile; network back → the reply appears without reopening.
-- ▢ "Open WhatsApp" chip → WhatsApp with the message filled in; uninstalled → wa.me in the browser.
-- ▢ An article, its links → the browser; back → the article.
+- ▢ **Airplane mode**, then open support: the fallback screen; *Email us* opens the mail app; network back, *Try again* opens the messenger.
+- ▢ Airplane mode **inside** a conversation: "Reconnecting…"; an agent replies meanwhile; network back, and the reply appears without reopening.
+- ▢ "Open WhatsApp" chip: WhatsApp with the message filled in; uninstalled, wa.me in the browser.
+- ▢ An article, its links go to the browser; back returns to the article.
 - ▢ Close: the X on every screen, and Android back, each close what they should.
-- ▢ Push: an agent replies while the app is in the background → notification → tap → the conversation.
-- ▢ Badge: an agent replies while the messenger is closed → the badge goes up within 30 s.
+- ▢ Push: an agent replies while the app is in the background, a notification arrives, and tapping it opens the conversation.
+- ▢ Badge: an agent replies while the messenger is closed, and the badge goes up within 30 s.
 - ▢ Kill and reopen the app, open support: the same conversation is still there (also signed out).
 - ▢ `onDiagnostic` lines appear in the app's logs (`messenger_ready {ms: …}`).
 
@@ -189,7 +203,7 @@ At least one iPhone and one Android phone, each app.
 
 - Sending a PDF or other file from the phone (the server takes PDFs; the app's picker is photos only).
 - A sound in the open messenger (the push notification is the alert).
-- Replying in a closed conversation: it reads in full, and **Send us a message** continues the open one or starts a new one — one open conversation per customer, as on the website.
+- Replying in a closed conversation: it reads in full, and **Send us a message** continues the open one or starts a new one, one open conversation per customer, as on the website.
 - Queueing messages typed while offline (sending waits for the connection).
 
 ## Working on the package
@@ -199,9 +213,10 @@ flutter pub get && flutter analyze && flutter test
 ```
 
 - `test/controller_test.dart` and `test/widgets_test.dart` run against a pretend server and socket (`test/support/fakes.dart`).
-- `GL_SCREENSHOTS=1 flutter test test/screenshots_test.dart` renders the main screens to `test/screens/*.png` (gitignored) with real fonts — a look at a change without a phone.
-- `test/live_test.dart` runs against the real API and Socket.IO server, started from the GL Support Chat server repository (private): `pnpm messenger:live` there prints `GL_LIVE_API=… GL_LIVE_PRODUCT=…`; set both and run `flutter test test/live_test.dart`. Without them it is skipped.
+- `test/attributes_test.dart` covers `setAttributes` against a pretend server.
+- `GL_SCREENSHOTS=1 flutter test test/screenshots_test.dart` renders the main screens to `test/screens/*.png` (gitignored) with real fonts, a look at a change without a phone.
+- `test/live_test.dart` runs against a real API and Socket.IO server, started from the GL Support Chat server repository: `pnpm messenger:live` there prints `GL_LIVE_API=… GL_LIVE_PRODUCT=…`; set both and run `flutter test test/live_test.dart`. Without them it is skipped.
 - The example app (`example/`) has only `lib/` and `pubspec.yaml`; run `flutter create .` inside it once to generate the Android and iOS folders.
-- A release: bump `version` in `pubspec.yaml`, add a `CHANGELOG.md` entry, commit, tag `v<version>`, push the tag; the apps move their `ref` to it.
+- A release: bump `version` in `pubspec.yaml`, add a `CHANGELOG.md` entry, commit, tag `v<version>`, push the tag; apps move their `ref` to it.
 
 © Get Licensed Ltd. All rights reserved. The source is public so the apps can install it; it is not licensed for other use.
