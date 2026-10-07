@@ -1,6 +1,6 @@
 # gl_support_chat
 
-GL Support Chat for the Get Licensed Flutter apps (GuardPass, GuardCheck, GuardSkills, APLH): a native messenger — Home, Messages, Help and the conversation — like Intercom's SDK, on the same API as the website messenger. One package, one chatbot per app; each app's branding, articles and suggested questions are set in the GL Support Chat dashboard.
+GL Support Chat for the Get Licensed Flutter apps (GuardPass, GuardCheck, GuardSkills, APLH): a native messenger — Home, Messages, Help and the conversation — like Intercom's SDK, on the same API as the website messenger. One package, one chatbot per app; each app's branding (colour, logo, the team faces it shows), articles and suggested questions are set in the GL Support Chat dashboard — Chatbots → the chatbot → Design — and change without a new app build.
 
 > **Built and tested, not yet run on a phone.** `flutter analyze` is clean and the unit, widget and live tests pass (the live test against the real API and Socket.IO server). Send any error from the first build back as it is.
 
@@ -107,9 +107,9 @@ So for the booking the app does one thing: pass `data.support_identity` to `tryP
 
 | Screen | What is on it |
 |---|---|
-| Home | Greeting ("Hi Ayesha 👋" when signed in), team faces, **Send us a message** with the team's status (online · back tomorrow at 9am · we'll reply by email), the **recent message**, help search and the top five articles |
+| Home | The chatbot's logo, the team faces the admin chose (Design → Team faces: automatic, chosen, or nobody), greeting ("Hi Ayesha 👋" when signed in), **Send us a message** with the team's status (online · back tomorrow at 9am · we'll reply by email), the **recent message**, help search and the top five articles |
 | Messages | Every conversation with this app's chatbot, newest first: preview, who, when, unread dot, "Closed". **Send us a message** at the bottom |
-| Conversation | The team's replies with their name and photo, photos and files the team sends, AI answers (typed out as they stream), the workflow's buttons and questions, CSAT faces after a close, ✓ / ✓✓, "New messages", typing dots both ways. The composer takes text and photos (library or camera). While nobody is online and the customer has no email on record: "Your email for follow-up". A closed conversation reads in full, with **Send us a message** instead of a composer |
+| Conversation | The header shows the team faces, or the chatbot's logo when none are shown. The team's replies with their name and photo, the workflow's messages beside the chatbot's logo, photos and files the team sends, AI answers (typed out as they stream), the workflow's buttons and questions, CSAT faces after a close, ✓ / ✓✓, "New messages", typing dots both ways. The composer takes text and photos (library or camera); **while the workflow waits on a button or a detail it asked for there is no composer at all**, as in Intercom — it comes back when typing is allowed. While nobody is online and the customer has no email on record: "Your email for follow-up". A closed conversation reads in full, with **Send us a message** instead of a composer |
 | Help | Search (instant, then full text from the server) and the articles, drawn natively; links open in the browser |
 
 ## 4. When something goes wrong
@@ -164,7 +164,8 @@ At least one iPhone and one Android phone, each app.
 - ▢ Signed in: Home greets by first name; a message reaches the inbox with the customer's name and type.
 - ▢ Signed out (sign-in screen entry): a message reaches the inbox anonymously; sign in → the same conversation is in their Messages.
 - ▢ An agent replies while the conversation is open: it appears at once; typing dots before it; ✓✓ once the agent has read the customer's message.
-- ▢ A workflow button and a detail it asks for (email): both reach the inbox; a wrong email shows the reason under the box.
+- ▢ A workflow button and a detail it asks for (email): both reach the inbox; a wrong email shows the reason under the box. Under the buttons there is no composer; it appears once the workflow lets the customer type.
+- ▢ The workflow's messages show the chatbot's logo (Design → Logo URL); Home and the header show the team faces chosen on the Design page.
 - ▢ **Photo**: library and camera, on both phones (the iPhone permission prompts appear once); the photo shows in the inbox thread and in the app.
 - ▢ Close the conversation from the inbox: the CSAT faces appear; rate and comment; the rating shows in the inbox.
 - ▢ Messages: the closed conversation reads in full, with **Send us a message**.
