@@ -63,7 +63,8 @@ class MessengerApi {
   /// POST /widget/auth. Retries what is worth retrying — no network, 429,
   /// 502, 503, 504 (honouring Retry-After up to 10 s) — at most three tries.
   /// A refused identity (401) is reported to [onIdentityRejected] and the
-  /// customer is signed in anonymously instead, as on the website.
+  /// customer is signed in anonymously instead, as on the website: the
+  /// session's `identified` then says false.
   Future<MessengerSession> authenticate({
     String? visitorId,
     Map<String, dynamic>? identity,

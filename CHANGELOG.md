@@ -1,4 +1,13 @@
-## Unreleased
+## 0.4.4
+
+- **Every `login` reaches the server with the identity it was given.** A `login` made while another sign-in was still out (the badge, the push token, an open messenger, an earlier `login`) used to join that one, which carried the customer before; the new name, email or details then waited for the next chat open or the 24-hour renewal. Now it waits for the one that is out and signs in afresh, and the token kept is the last customer's; the same after `logout`.
+- **`login` returns `false` when the server refused the identity** (no `hash`, or a signature that does not match), as its documentation always said: the messenger still opens anonymously and `identity_rejected` gives the reason. It used to return `true`.
+- **`GLSupportChatIdentity.withExtra({...})`** adds the app's own details (the custom attributes it sent Intercom) to a signed identity without touching the six signed fields, so the signature holds.
+- Extra keys: a list or a map is sent as its JSON (it was Dart's `{a: 1}`), a value of spaces is dropped, and a key that is one of the six with other capitals or spaces (`Email`, ` name`) is never sent as a detail.
+- README: every `login` updates the customer in the inbox, as Intercom did — call it at app start, after a profile refresh, and before `present` when the details may have changed; only `id` and `hash` are required; what the server does with the extra keys (kept on the contact, up to 100, secrets dropped).
+- Nothing to change in an app. Recommended: call `login` with the fresh identity before `present`, where the Intercom code logged in on every chat tap.
+
+## 0.4.3
 
 - **An identity without a `hash` is now accepted as unverified.** `GLSupportChatIdentity.tryParse` needs only an `id`. `login` sends the same `identity` object, without a `hash`. Keys other than the six known ones are kept in the new `GLSupportChatIdentity.extra` and sent inside that object, unsigned and never able to replace one of the six. It is up to the server whether to show it as unverified; a server that only takes signed identities answers 401 and the plugin opens the chat anonymously, as before. **Breaking:** `GLSupportChatIdentity.hash` is now `String?` (use `isVerified`), and `tryParse({'id': 1})` no longer returns `null`. `messengerUrl()` carries only a signed identity.
 

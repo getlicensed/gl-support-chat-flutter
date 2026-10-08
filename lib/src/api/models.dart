@@ -80,6 +80,7 @@ class MessengerSession {
     this.logoUrl,
     this.welcomeGreeting,
     this.welcomeSubtitle,
+    this.identified = false,
     this.identifiedName,
     this.email,
     this.team = const <TeamFace>[],
@@ -98,6 +99,10 @@ class MessengerSession {
   final String? logoUrl;
   final String? welcomeGreeting;
   final String? welcomeSubtitle;
+
+  /// The server accepted the identity sent with this sign-in. False for an
+  /// anonymous one — also the one after a refused identity.
+  final bool identified;
 
   /// Set when a signed identity was accepted: greet by first name.
   final String? identifiedName;
@@ -131,6 +136,7 @@ class MessengerSession {
       logoUrl: logo != null && RegExp(r'^https?://', caseSensitive: false).hasMatch(logo) ? logo : null,
       welcomeGreeting: _str(j['welcomeGreeting']),
       welcomeSubtitle: _str(j['welcomeSubtitle']),
+      identified: j['identified'] is Map,
       identifiedName: _str(identified['name']),
       email: _str(j['email']),
       team: _maps(j['team']).take(3).map(TeamFace.fromJson).toList(),

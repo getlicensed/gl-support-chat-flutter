@@ -7,7 +7,8 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // What `login` puts in the sign-in body: a signed identity with its hash, an
-// unverified one without. Run with `flutter test test/attributes_test.dart`.
+// unverified one without, and the changed details at every login. Run with
+// `flutter test test/attributes_test.dart`.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -20,8 +21,18 @@ void main() {
       client: MockClient((http.Request req) async {
         final json = <String, String>{'content-type': 'application/json'};
         if (req.url.path == '/widget/auth') {
-          authBodies.add(jsonDecode(req.body) as Map<String, dynamic>);
-          return http.Response(jsonEncode(<String, dynamic>{'token': 't', 'visitorId': 'visitor-1'}), 200, headers: json);
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          authBodies.add(body);
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              'token': 't',
+              'visitorId': 'visitor-1',
+              // As the server: set when it accepted an identity, null for an anonymous sign-in.
+              'identified': body.containsKey('identity') ? <String, dynamic>{'name': null, 'type': null} : null,
+            }),
+            200,
+            headers: json,
+          );
         }
         return http.Response(jsonEncode(<String, dynamic>{'unreadCount': 0}), 200, headers: json);
       }),
@@ -37,7 +48,7 @@ void main() {
       'email': 'a@b.co',
       'name': 'Ayesha Khan',
     })!;
-    await GLSupportChat.login(identity);
+    expect(await GLSupportChat.login(identity), isTrue);
 
     expect(authBodies.single['identity'], <String, dynamic>{
       'id': 'learner:1',
@@ -45,6 +56,31 @@ void main() {
       'name': 'Ayesha Khan',
       'hash': 'h',
     });
+  });
+
+  test('every login sends the identity again, with what changed since', () async {
+    final first = GLSupportChatIdentity.tryParse(<String, dynamic>{
+      'id': 'learner:1',
+      'hash': 'h1',
+      'name': 'Ayesha Khan',
+      'booking_ref': 'A-1041',
+    })!;
+    expect(await GLSupportChat.login(first), isTrue);
+
+    // The profile was fetched again: a new name (signed again by the backend), new details.
+    final second = GLSupportChatIdentity.tryParse(<String, dynamic>{'id': 'learner:1', 'hash': 'h2', 'name': 'Ayesha Malik'})!
+        .withExtra(<String, Object?>{'booking_ref': 'A-1042', 'staffing_id': 7});
+    expect(await GLSupportChat.login(second), isTrue);
+
+    expect(authBodies, hasLength(2));
+    expect(authBodies.last['identity'], <String, dynamic>{
+      'booking_ref': 'A-1042',
+      'staffing_id': '7',
+      'id': 'learner:1',
+      'name': 'Ayesha Malik',
+      'hash': 'h2',
+    });
+    expect(authBodies.last['visitorId'], 'visitor-1', reason: 'the same phone, the same visitor');
   });
 
   test('tryParse(data) then login(identity) sends an unverified identity without a hash', () async {
@@ -103,16 +139,19 @@ void main() {
           if (body.containsKey('identity')) {
             return http.Response(jsonEncode(<String, dynamic>{'error': 'no', 'code': 'identity_bad_signature'}), 401, headers: json);
           }
-          return http.Response(jsonEncode(<String, dynamic>{'token': 't', 'visitorId': 'visitor-1'}), 200, headers: json);
+          return http.Response(jsonEncode(<String, dynamic>{'token': 't', 'visitorId': 'visitor-1', 'identified': null}), 200, headers: json);
         }
         return http.Response(jsonEncode(<String, dynamic>{'unreadCount': 0}), 200, headers: json);
       }),
     );
-    await GLSupportChat.configure(apiUrl: 'https://api.test', productId: 'p1');
+    final diagnostics = <String>[];
+    await GLSupportChat.configure(apiUrl: 'https://api.test', productId: 'p1', onDiagnostic: (event, detail) => diagnostics.add('$event ${detail['code']}'));
 
-    await GLSupportChat.login(GLSupportChatIdentity.tryParse(<String, dynamic>{'id': '1', 'email': 'a@b.co'})!);
+    final ok = await GLSupportChat.login(GLSupportChatIdentity.tryParse(<String, dynamic>{'id': '1', 'email': 'a@b.co'})!);
 
+    expect(ok, isFalse, reason: 'refused: the customer is anonymous, so login says so');
     expect(calls, 2, reason: 'refused once, then anonymous');
     expect(authBodies.last.containsKey('identity'), isFalse);
+    expect(diagnostics, contains('identity_rejected identity_bad_signature'));
   });
 }

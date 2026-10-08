@@ -23,7 +23,7 @@ dependencies:
   gl_support_chat:
     git:
       url: https://github.com/getlicensed/gl-support-chat-flutter.git
-      ref: v0.4.2
+      ref: v0.4.4
 ```
 
 Pin a tag (`ref`) so a build only changes when you move it. The versions and what changed in each are in [`CHANGELOG.md`](CHANGELOG.md).
@@ -63,6 +63,7 @@ await GLSupportChat.configure(
 
 // Optional: after your own sign-in, with the identity YOUR backend signed (never in the app).
 // tryParse never throws; login never throws and never blocks sign-in for long.
+// Call it again whenever the details may have changed (see "Keeping the customer's details up to date").
 final identity = GLSupportChatIdentity.tryParse(profile['support_identity']);
 if (identity != null) await GLSupportChat.login(identity);
 
@@ -99,7 +100,9 @@ type = optional, one of the customer types the server accepts: learner | employe
 
 Sign the values exactly as you send them. A numeric `id`, and `null` or `""` for missing fields, are accepted. Only those six fields are signed: extra keys in the object travel with it (see below) but are not part of the signature, and changing any of the six after signing (reformatting the phone, trimming the name, rebuilding the object) breaks the signature, so pass the object to `tryParse` unchanged.
 
-If the signature is refused, the messenger still opens, anonymously, and `onDiagnostic` reports `identity_rejected` with the reason: fix the backend, nothing in the app. If your backend has no identity for a customer, skip `login`: the messenger opens anonymously and everything else works.
+**Only `id` and `hash` are required.** Any of `email`, `phone`, `type` and `name` may be missing. GL Support Chat checks the signature first, then each of those four on its own: one the inbox cannot use (an address that is not one, a `type` other than the three above, a phone with fewer than 6 digits) is left out and the rest of the identity stands, and a name longer than 120 characters is cut.
+
+If the identity is refused (no `hash`, or a signature that does not match: a 401), the messenger still opens, anonymously, `login` returns `false`, and `onDiagnostic` reports `identity_rejected` with the reason: fix the backend, nothing in the app. If your backend has no identity for a customer, skip `login`: the messenger opens anonymously and everything else works.
 
 **Without a hash (unverified).** `tryParse` also accepts a map that has an `id` but no `hash`, and `login` sends it as the same `identity` object, just without a `hash`:
 
@@ -119,19 +122,39 @@ That call sends this inside the sign-in body (`POST /widget/auth`), with no `has
 "identity": { "order_ref": "A-1042", "id": "220657", "email": "ayesha@example.com", "name": "Ayesha Khan" }
 ```
 
-- **The six fields, and any extra keys.** `id`, `email`, `phone`, `name`, `type` (and `hash` when there is one) are the identity. Any other key in the map is kept in `identity.extra` and sent inside the same `identity` object. Extra keys are never signed, so the server cannot trust them, and one can never replace the six. Values are kept as strings, and blank or `null` values are dropped.
+- **The six fields, and any extra keys.** `id`, `email`, `phone`, `name`, `type` (and `hash` when there is one) are the identity. Any other key in the map is kept in `identity.extra` and sent inside the same `identity` object. Extra keys are never signed, so the server cannot trust them, and one can never replace the six: a key that is one of them with other capitals or spaces (`Email`, ` name`) is dropped. Values are sent as text (a number or a boolean as written, a list or a map as its JSON), and blank or `null` values are dropped.
 - **Don't repeat what `device` already sends.** OS, model, manufacturer, app version and build go in `GLSupportChatDevice` in `configure` and travel in the sign-in's `device` block. Leave them out of the identity map.
-- **The server decides.** Nothing vouches for an unverified identity, and a server may refuse it. When it does, the plugin signs the customer in anonymously and `onDiagnostic` reports `identity_rejected` with the server's code, for example `identity_bad_signature` or `identity_malformed`. A server that accepts unverified identities can show the details to the team as unverified.
-- **On GL Support Chat** (Get Licensed's server, 7 Oct): an identity without a `hash` is refused (`identity_malformed`), extras or not. Beside a **signed** identity the extra keys are kept as details on the conversation, shown to the team as sent by the app (not verified) and never used to find or join a customer: up to 20, keys as snake_case words, one line of 200 characters each. To send them, add them to the backend's object without touching its six fields, then parse it:
-
-  ```dart
-  final raw = Map<String, dynamic>.from(response['data']['support_identity']);
-  raw.addAll({'booking_first_name': first, 'booking_last_name': last, 'staffing_id': staffingId});
-  final identity = GLSupportChatIdentity.tryParse(raw); // still verified: the hash covers only the six
-  ```
+- **The server decides.** Nothing vouches for an unverified identity, and a server may refuse it. When it does, the plugin signs the customer in anonymously, `login` returns `false`, and `onDiagnostic` reports `identity_rejected` with the server's code, for example `identity_bad_signature` or `identity_malformed`. A server that accepts unverified identities can show the details to the team as unverified.
+- **On GL Support Chat** (Get Licensed's server): an identity without a `hash` is refused (`identity_malformed`), extras or not. Beside a **signed** identity the extra keys become the customer's details: see the next section.
 - **Check what is sent.** Print `identity.toJson()` before calling `login`, or watch the request in a network proxy. `onDiagnostic` shows the server's answer.
 - **Not shared across devices.** Only a signed identity (`identity.isVerified`) can join the customer to their history across devices and channels.
 - **The browser link** from `messengerUrl()` carries a signed identity only.
+
+### Keeping the customer's details up to date
+
+As with Intercom, every `login` updates the customer in the inbox. It sends the identity with its extra keys, and GL Support Chat updates the contact: the name, email, phone and type the identity carries, and the extra keys merged into the contact's details (a key sent again takes the new value, a new key is added, a key not sent keeps its last value). An agent with the customer open sees the change at once, without reloading.
+
+So call `login`:
+
+- at every app start, once your own session is restored;
+- again whenever you fetch the profile or booking that carries `support_identity` again;
+- right before `present` when the details may have changed, as the Intercom integration did on every chat tap.
+
+It is one request and safe to repeat; the last call wins, even while an earlier one is still out. Do not call `logout` before it: that starts a new anonymous visitor (§6, step 7).
+
+**Your own details** (the custom attributes you sent Intercom) go beside the signed identity with `withExtra`. It returns a copy and never touches the six signed fields, so the signature still holds:
+
+```dart
+final identity = GLSupportChatIdentity.tryParse(profile['support_identity'])
+    ?.withExtra({'booking_first_name': first, 'booking_last_name': last, 'staffing_id': staffingId});
+if (identity != null) await GLSupportChat.login(identity); // still verified: the hash covers only the six
+```
+
+What GL Support Chat does with the extra keys:
+
+- They describe the customer; they never identify them. They are kept on the contact, shown to the team under **Details** in the customer panel (labelled as sent by the app, not verified) and on the Contacts page, and never used to find or join a contact.
+- Up to 100 a sign-in. Keys become snake_case (`bookingFirstName` → `booking_first_name`). Values are one line of text up to 500 characters; a list or a map arrives as its JSON. Blank and `null` values are dropped.
+- Keys that look like secrets are dropped, inside a list or a map too: `password`, `passwd`, `pwd`, `secret`, `token`, `api_key`, `apikey`, `hash`, `otp`, `cvv` and `cvc`, as a word of the key (`wifi_password` too). Leave them out anyway.
 
 ## 3. What the customer sees
 
@@ -182,11 +205,11 @@ The calls map across like this (shown for Intercom; other SDKs are similar):
 
 1. Add the package (§1) and the two iOS strings (§0).
 2. Identify the user: `Intercom.loginIdentifiedUser` → `GLSupportChat.login(GLSupportChatIdentity.tryParse(...))` with an identity your backend signed. Intercom's `user_hash`, which an app often computed on the phone, becomes the identity's `hash`, made by the backend.
-3. Custom attributes: there is no free-form attribute map. Customer details go in the identity (`email`, `name`, `phone`, `type`, and an `id` that can carry an order or booking id), and device and app details go in `GLSupportChatDevice` in `configure` (OS, model, manufacturer, version, build).
+3. Custom attributes: `Intercom.updateUser(customAttributes: …)` → `identity.withExtra({...})` and `login` again (§2, "Keeping the customer's details up to date"); every `login` updates the customer, as Intercom's did. Name, email and phone come in the signed identity; device and app details go in `GLSupportChatDevice` in `configure` (OS, model, manufacturer, version, build).
 4. Open: `Intercom.displayMessenger()` → `GLSupportChat.present(context)`; `displayHelpCenter` → `presentHelp`; `displayArticle(id)` → `presentArticle(slug)` (slugs are on the dashboard's Articles page).
 5. Unread badge: `GLSupportChat.unreadCount`.
 6. Push: `Intercom.sendTokenToIntercom` → `GLSupportChat.registerPushToken`; handle `data['type'] == 'message'` on tap.
-7. Sign out: `Intercom.logout()` → `GLSupportChat.logout()`. Call it on sign-out only, not before every chat tap, or an anonymous visitor starts an empty conversation each time.
+7. Sign out: `Intercom.logout()` → `GLSupportChat.logout()`. Call it on sign-out only, not before every chat tap, or an anonymous visitor starts an empty conversation each time. Where the Intercom code ran logout → login → updateUser on every chat tap, call only `login` (with the fresh identity) and then `present`.
 8. Add a "Contact support" entry on the sign-in screen (anonymous).
 9. Remove the old SDK's pod / gradle dependency.
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
@@ -32,7 +33,9 @@ typedef GLSupportChatDiagnostics = void Function(String event, Map<String, Objec
 /// An identity is **verified** when it has a [hash] your backend made: the
 /// server can check it. Without a [hash] it is **unverified**: it is still
 /// sent, as the same `identity` object without a `hash`, and it is up to the
-/// server whether to show it as unverified or ignore it.
+/// server whether to show it as unverified or ignore it. GL Support Chat
+/// refuses it: the chat opens anonymously and [GLSupportChat.login] returns
+/// false.
 class GLSupportChatIdentity {
   const GLSupportChatIdentity({
     required this.id,
@@ -59,9 +62,10 @@ class GLSupportChatIdentity {
   final String? hash;
 
   /// Any other details that came with the identity (for example
-  /// `booking_first_name` or `model`). Sent inside the `identity` object next
-  /// to the six known fields. They are never part of the signature, so the
-  /// server cannot trust them.
+  /// `booking_first_name` or `model`): what an app sent Intercom as custom
+  /// attributes. Sent inside the `identity` object next to the six known
+  /// fields. They are never part of the signature, so the server cannot
+  /// trust them. Add your own with [withExtra].
   final Map<String, String> extra;
 
   /// True when your backend signed it.
@@ -70,8 +74,8 @@ class GLSupportChatIdentity {
   /// Accepts what a Laravel backend really sends: a numeric `id`, and `null`
   /// or "" for fields it does not have. A missing or empty `hash` makes an
   /// unverified identity. Keys other than the six known ones are kept in
-  /// [extra] (blank values are dropped). Throws [FormatException] when there
-  /// is no id — use [tryParse] to get `null` instead.
+  /// [extra], by the rules of [withExtra]. Throws [FormatException] when
+  /// there is no id — use [tryParse] to get `null` instead.
   factory GLSupportChatIdentity.fromJson(Map<String, dynamic> json) {
     final id = json['id'];
     final hash = json['hash'];
@@ -79,19 +83,12 @@ class GLSupportChatIdentity {
     if (idText.isEmpty) {
       throw const FormatException('an identity needs an id');
     }
+    // Not trimmed: the six are signed exactly as the backend sent them.
     String? text(Object? v) {
       if (v == null) return null;
       final s = v is String ? v : '$v';
       return s.isEmpty ? null : s;
     }
-
-    final extra = <String, String>{};
-    json.forEach((key, value) {
-      final k = key.trim();
-      final v = text(value);
-      if (_knownKeys.contains(key) || k.isEmpty || v == null) return;
-      extra[k] = v;
-    });
 
     return GLSupportChatIdentity(
       id: idText,
@@ -100,11 +97,63 @@ class GLSupportChatIdentity {
       phone: text(json['phone']),
       name: text(json['name']),
       type: text(json['type']),
-      extra: extra,
+      extra: _mergeExtra(const <String, String>{}, json),
     );
   }
 
   static const Set<String> _knownKeys = <String>{'id', 'hash', 'email', 'phone', 'name', 'type'};
+
+  /// ` email` or `Name` is one of the signed fields, not a detail: never kept
+  /// or sent as one.
+  static bool _isKnownKey(String key) => _knownKeys.contains(key.trim().toLowerCase());
+
+  /// A copy with [more] added to [extra] (a key already there takes the new
+  /// value) — the app's own details, such as the custom attributes it sent
+  /// Intercom, added without touching the six signed fields, so the
+  /// signature still holds. This identity is left as it was.
+  ///
+  /// Keys are trimmed; one of the six (in any case) is ignored. Values are
+  /// sent as text: a number or a boolean as written, a list or a map as its
+  /// JSON. A `null` or blank value is ignored, so the detail keeps what it
+  /// had.
+  GLSupportChatIdentity withExtra(Map<String, Object?> more) => GLSupportChatIdentity(
+        id: id,
+        hash: hash,
+        email: email,
+        phone: phone,
+        name: name,
+        type: type,
+        extra: _mergeExtra(extra, more),
+      );
+
+  static Map<String, String> _mergeExtra(Map<String, String> into, Map<String, Object?> more) {
+    final out = Map<String, String>.of(into);
+    more.forEach((key, value) {
+      final k = key.trim();
+      if (k.isEmpty || _isKnownKey(k)) return;
+      final v = _extraText(value);
+      if (v != null) out[k] = v;
+    });
+    return out;
+  }
+
+  static String? _extraText(Object? value) {
+    if (value == null) return null;
+    String text;
+    if (value is String) {
+      text = value;
+    } else if (value is Map || value is Iterable) {
+      try {
+        // "{a: 1}" is Dart's, not something the team can read; a set is a list.
+        text = jsonEncode(value is Iterable ? value.toList() : value, toEncodable: (o) => o is Iterable ? o.toList() : '$o');
+      } catch (_) {
+        return null; // a map that contains itself: left out, never a crash
+      }
+    } else {
+      text = '$value';
+    }
+    return text.trim().isEmpty ? null : text;
+  }
 
   /// [fromJson], or `null` for anything that is not a usable identity — so a
   /// missing or odd `support_identity` can never crash the app's sign-in.
@@ -121,7 +170,7 @@ class GLSupportChatIdentity {
   /// key can never replace one of the six.
   Map<String, dynamic> toJson() => {
         for (final e in extra.entries)
-          if (!_knownKeys.contains(e.key)) e.key: e.value,
+          if (!_isKnownKey(e.key)) e.key: e.value,
         'id': id,
         if (email != null) 'email': email,
         if (phone != null) 'phone': phone,
@@ -158,6 +207,11 @@ class GLSupportChat {
   static bool _foreground = true;
   static MessengerController? _open;
   static Future<MessengerSession>? _signingIn;
+
+  /// Moves on at every [login] and [logout]: whose sign-in is whose. A
+  /// sign-in is shared only with callers of the same generation.
+  static int _generation = 0;
+  static int _signingInFor = 0;
 
   static SessionStore _store = const PrefsSessionStore();
   static http.Client? _httpClient;
@@ -208,22 +262,30 @@ class GLSupportChat {
   /// Registers the push token too, if one was given before. Their anonymous
   /// chat on this phone, if any, becomes part of their history.
   ///
+  /// Every call sends the identity, and the server updates the customer's
+  /// contact with it (name, email, phone, and the [GLSupportChatIdentity.extra]
+  /// details), as Intercom did at every login. Call it again whenever those
+  /// may have changed — at app start, after a profile refresh, before
+  /// [present]. The last call wins, even while an earlier sign-in is still out.
+  ///
   /// Never throws and never blocks your sign-in for more than a few seconds.
-  /// Returns false when the identity could not be confirmed with the server
-  /// right now — the messenger still opens (anonymously, if the signature
-  /// itself was refused) and the badge catches up on its own.
+  /// Returns false when the server refused the identity (the messenger then
+  /// opens anonymously, and `identity_rejected` says why) or could not be
+  /// reached right now (the badge catches up on its own).
   static Future<bool> login(GLSupportChatIdentity identity) async {
     _identity = identity;
+    _generation++;
     _api?.token = null;
     _authFailures = 0;
     _authPausedUntil = null;
     try {
-      if (!await _authenticateInBackground()) return false;
+      final session = await _authenticateInBackground();
+      if (session == null) return false;
       final token = _pushToken;
       final platform = _pushPlatform;
       if (token != null && platform != null) await registerPushToken(token, platform: platform);
       await refreshUnread();
-      return true;
+      return session.identified;
     } catch (_) {
       return false;
     }
@@ -237,6 +299,7 @@ class GLSupportChat {
     final push = _pushToken;
     final bearer = api?.token;
     _identity = null;
+    _generation++;
     _authFailures = 0;
     _authPausedUntil = null;
     _emitUnread(0);
@@ -256,7 +319,10 @@ class GLSupportChat {
     _pushPlatform = platform;
     final api = _api;
     if (_identity == null || api == null) return;
-    if (api.token == null && !await _authenticateInBackground()) return;
+    final generation = _generation;
+    if (api.token == null && await _authenticateInBackground() == null) return;
+    // Signed out, or someone else signed in, meanwhile: that login registers it.
+    if (generation != _generation) return;
     try {
       await api.registerPushToken(token, platform: platform, appId: _appId);
     } catch (_) {
@@ -270,9 +336,13 @@ class GLSupportChat {
     if (api == null || _identity == null) return _lastUnread;
     final open = _open;
     if (open != null && open.phase == MessengerPhase.ready) return _lastUnread; // the open messenger counts live
+    final generation = _generation;
     try {
-      if (api.token == null && !await _authenticateInBackground()) return _lastUnread;
+      if (api.token == null && await _authenticateInBackground() == null) return _lastUnread;
+      // Signed out, or someone else signed in, meanwhile: not their count to show.
+      if (generation != _generation) return _lastUnread;
       final n = await api.unread();
+      if (generation != _generation) return _lastUnread;
       _emitUnread(n);
       return n;
     } catch (_) {
@@ -348,58 +418,79 @@ class GLSupportChat {
 
   /// Sign the visitor in: their identity if they are signed in to the app,
   /// and the visitor id this phone has kept for this chatbot. One at a time —
-  /// the badge, the push token and the messenger may all ask at once.
+  /// the badge, the push token and the messenger may all ask at once, and
+  /// share the sign-in that is out. A [login] or [logout] since it started
+  /// does not share it (it carries the customer before): it waits for it to
+  /// finish, worked or not, then signs in afresh. In that order the last
+  /// sign-in to start is the last to finish, so its token is the one kept.
   static Future<MessengerSession> _signIn() {
     final pending = _signingIn;
-    if (pending != null) return pending;
-    final run = _doSignIn();
+    final generation = _generation;
+    if (pending != null && _signingInFor == generation) return pending;
+    final identity = _identity;
+    final run = pending == null
+        ? _doSignIn(generation, identity)
+        : pending.then<void>((_) {}, onError: (Object _) {}).then((_) => _doSignIn(generation, identity));
     _signingIn = run;
-    return run.whenComplete(() => _signingIn = null);
+    _signingInFor = generation;
+    return run.whenComplete(() {
+      if (identical(_signingIn, run)) _signingIn = null;
+    });
   }
 
-  static Future<MessengerSession> _doSignIn() async {
+  static Future<MessengerSession> _doSignIn(int generation, GLSupportChatIdentity? identity) async {
     final api = _api!;
     final product = api.productId;
     final stored = await _store.visitorId(product);
     final device = (_device ?? const GLSupportChatDevice()).toJson(appId: _appId);
     final session = await api.authenticate(
       visitorId: stored,
-      identity: _identity?.toJson(),
+      identity: identity?.toJson(),
       device: device.isEmpty ? null : device,
       onIdentityRejected: (code, _) => _diag('identity_rejected', <String, Object?>{'code': code}),
     );
+    if (generation != _generation) {
+      // A login or logout came while this was out: the token is the customer
+      // before's, so nothing more goes out with it (the sign-in queued behind
+      // this one brings the right one), and the visitor id is not kept —
+      // logout() forgot it on purpose.
+      api.token = null;
+      return session;
+    }
     if (session.visitorId.isNotEmpty && session.visitorId != stored) await _store.saveVisitorId(product, session.visitorId);
     _authFailures = 0;
     _authPausedUntil = null;
     return session;
   }
 
-  /// A 401 mid-session (the 24-hour token ran out): sign in again.
+  /// A 401 mid-session (the 24-hour token ran out): sign in again. The token
+  /// the API holds afterwards, not the session's: if the customer changed
+  /// while it was out, there is none yet rather than the one before's.
   static Future<String?> _renewToken() async {
     try {
-      return (await _signIn()).token;
+      await _signIn();
+      return _api?.token;
     } catch (_) {
       return null;
     }
   }
 
   /// Sign-in for the badge and push calls, which run without the customer
-  /// looking. Backs off after failures (30 s doubling to 10 min) so a broken
-  /// signature or an outage never turns every app on every phone into a
-  /// retry loop.
-  static Future<bool> _authenticateInBackground() async {
-    if (_api == null) return false;
+  /// looking: the session, or null. Backs off after failures (30 s doubling
+  /// to 10 min) so a broken signature or an outage never turns every app on
+  /// every phone into a retry loop.
+  static Future<MessengerSession?> _authenticateInBackground() async {
+    if (_api == null) return null;
     final pausedUntil = _authPausedUntil;
-    if (pausedUntil != null && DateTime.now().isBefore(pausedUntil)) return false;
+    if (pausedUntil != null && DateTime.now().isBefore(pausedUntil)) return null;
     try {
-      await _signIn();
-      return true;
+      return await _signIn();
     } on ApiException catch (e) {
       _authFailed(e.status, e.message);
-      return false;
+      return null;
     } catch (e) {
       _authFailed(0, '$e');
-      return false;
+      return null;
     }
   }
 

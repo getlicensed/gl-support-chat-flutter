@@ -14,7 +14,8 @@ void main() {
     GLSupportChat.debugOverride(
       client: MockClient((req) async {
         if (req.url.path == '/widget/auth') sent.add(jsonDecode(req.body) as Map<String, dynamic>);
-        return http.Response(jsonEncode(<String, dynamic>{'token': 't', 'visitorId': 'v', 'unreadCount': 0}), 200);
+        // `identified`, as the server answers an identity it accepted: login() is true only then.
+        return http.Response(jsonEncode(<String, dynamic>{'token': 't', 'visitorId': 'v', 'identified': <String, dynamic>{'name': null, 'type': null}, 'unreadCount': 0}), 200);
       }),
       store: MemorySessionStore(),
     );

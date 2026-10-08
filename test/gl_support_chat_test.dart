@@ -100,12 +100,88 @@ void main() {
       const identity = GLSupportChatIdentity(
         id: 'learner:1',
         email: 'real@b.co',
-        extra: <String, String>{'email': 'fake@b.co', 'id': 'x', 'hash': 'y'},
+        extra: <String, String>{'email': 'fake@b.co', 'id': 'x', 'hash': 'y', 'Name': 'Not Signed'},
       );
       final json = identity.toJson();
       expect(json['id'], 'learner:1');
       expect(json['email'], 'real@b.co');
       expect(json.containsKey('hash'), isFalse);
+      expect(json.containsKey('Name'), isFalse);
+    });
+
+    test('extra values: blank ones dropped, lists and maps as JSON, numbers and booleans as text', () {
+      final identity = GLSupportChatIdentity.tryParse({
+        'id': 1,
+        'hash': 'abc',
+        'spaces': '   ',
+        'tab': '\t',
+        'courses': ['SIA', 'CSCS'],
+        'booking': {'ref': 'A-1042', 'paid': true},
+        'empty_list': <Object?>[],
+        'attempts': 3,
+        'score': 4.5,
+        'paid': false,
+        ' booking_ref ': 'A-1042',
+        ' email': 'fake@b.co',
+        'Name': 'Not Signed',
+        'HASH': 'x',
+      })!;
+      expect(identity.extra, <String, String>{
+        'courses': '["SIA","CSCS"]',
+        'booking': '{"ref":"A-1042","paid":true}',
+        'empty_list': '[]',
+        'attempts': '3',
+        'score': '4.5',
+        'paid': 'false',
+        'booking_ref': 'A-1042',
+      });
+      expect(identity.email, isNull, reason: '" email" is not the signed field, and not a detail either');
+      expect(identity.name, isNull);
+      expect(identity.hash, 'abc');
+      expect(identity.toJson().keys.toSet(), <String>{'id', 'hash', 'courses', 'booking', 'empty_list', 'attempts', 'score', 'paid', 'booking_ref'});
+    });
+
+    test('withExtra adds details without touching the six, and leaves the original as it was', () {
+      final signed = GLSupportChatIdentity.tryParse({
+        'id': 'learner:1',
+        'hash': 'abc',
+        'email': 'real@b.co',
+        'name': 'Ayesha Khan',
+        'model': 'Pixel 8',
+        'staffing_id': '7',
+      })!;
+      final more = signed.withExtra(<String, Object?>{
+        'booking_first_name': 'Ayesha',
+        'model': 'Pixel 9', // replaces
+        'staffing_id': null, // ignored: keeps what it had
+        'note': '  ', // ignored
+        'booking': {'ref': 'A-1042'},
+        'email': 'fake@b.co', // one of the six: ignored
+        ' Name ': 'Not Signed',
+        'id': 'someone-else',
+        'hash': 'forged',
+        'type': 'employer',
+      });
+
+      expect(more.id, 'learner:1');
+      expect(more.hash, 'abc');
+      expect(more.email, 'real@b.co');
+      expect(more.name, 'Ayesha Khan');
+      expect(more.type, isNull);
+      expect(more.isVerified, isTrue);
+      expect(more.extra, <String, String>{
+        'model': 'Pixel 9',
+        'staffing_id': '7',
+        'booking_first_name': 'Ayesha',
+        'booking': '{"ref":"A-1042"}',
+      });
+      expect(signed.extra, <String, String>{'model': 'Pixel 8', 'staffing_id': '7'}, reason: 'a copy: the original is unchanged');
+      final json = more.toJson();
+      expect(json['id'], 'learner:1');
+      expect(json['email'], 'real@b.co');
+      expect(json['name'], 'Ayesha Khan');
+      expect(json['hash'], 'abc');
+      expect(json.containsKey('type'), isFalse);
     });
   });
 
