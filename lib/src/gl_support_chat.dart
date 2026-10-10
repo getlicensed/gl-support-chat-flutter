@@ -205,8 +205,17 @@ class GLSupportChat {
   static DateTime? _authPausedUntil;
   static _Lifecycle? _lifecycle;
   static bool _foreground = true;
-  static MessengerController? _open;
   static Future<MessengerSession>? _signingIn;
+
+  /// The messenger's state for the customer signed in now, kept between
+  /// opens so the next one shows it at once. Dropped — at once — by
+  /// [logout] and by a [login] as someone else.
+  static MessengerController? _controller;
+
+  /// While the messenger is on screen: done when it closes. A [present]
+  /// meanwhile goes to the screen asked for through [_requests].
+  static Future<void>? _shown;
+  static MessengerRequests? _requests;
 
   /// Moves on at every [login] and [logout]: whose sign-in is whose. A
   /// sign-in is shared only with callers of the same generation.
@@ -247,6 +256,13 @@ class GLSupportChat {
     _api?.close();
     _api = MessengerApi(apiUrl: apiUrl, productId: productId.trim(), client: _httpClient)
       ..reauthenticate = _renewToken;
+    // What the messenger held was fetched through the API before (perhaps
+    // another chatbot's). On screen, the next present() replaces it.
+    final kept = _controller;
+    if (kept != null && !_onScreen()) {
+      _controller = null;
+      kept.dispose();
+    }
     _productId = productId.trim();
     _appId = appId;
     _device = device;
@@ -273,9 +289,13 @@ class GLSupportChat {
   /// opens anonymously, and `identity_rejected` says why) or could not be
   /// reached right now (the badge catches up on its own).
   static Future<bool> login(GLSupportChatIdentity identity) async {
+    final someoneElse = _identity?.id != identity.id;
     _identity = identity;
     _generation++;
     _api?.token = null;
+    // The same customer again (fresh details before present): what the
+    // messenger holds is still theirs. Anyone else: it goes now.
+    if (someoneElse) _forgetMessenger();
     _authFailures = 0;
     _authPausedUntil = null;
     try {
@@ -300,6 +320,8 @@ class GLSupportChat {
     final bearer = api?.token;
     _identity = null;
     _generation++;
+    // Their conversations, messages and draft go now, not at the next open.
+    _forgetMessenger(restart: false);
     _authFailures = 0;
     _authPausedUntil = null;
     _emitUnread(0);
@@ -309,6 +331,25 @@ class GLSupportChat {
     api?.token = null;
     final product = _productId;
     if (product != null) await _store.forget(product);
+    // On screen, it starts again only now: as a new anonymous visitor, not
+    // with the visitor id just forgotten.
+    final open = _controller;
+    if (open != null && open.phase == MessengerPhase.loading && _onScreen()) unawaited(open.start());
+  }
+
+  /// Someone else now, or nobody: the messenger's conversations, messages,
+  /// draft and unsent messages go at once. On screen it is wiped and, with
+  /// [restart], starts again for whoever is signed in; otherwise it is gone.
+  static void _forgetMessenger({bool restart = true}) {
+    final c = _controller;
+    if (c == null) return;
+    if (_onScreen()) {
+      c.reset();
+      if (restart) unawaited(c.start());
+      return;
+    }
+    _controller = null;
+    c.dispose();
   }
 
   /// Register (or refresh) this install's FCM token so agent replies reach
@@ -334,8 +375,8 @@ class GLSupportChat {
   static Future<int> refreshUnread() async {
     final api = _api;
     if (api == null || _identity == null) return _lastUnread;
-    final open = _open;
-    if (open != null && open.phase == MessengerPhase.ready) return _lastUnread; // the open messenger counts live
+    final open = _controller;
+    if (open != null && open.phase == MessengerPhase.ready && _onScreen()) return _lastUnread; // the open messenger counts live
     final generation = _generation;
     try {
       if (api.token == null && await _authenticateInBackground() == null) return _lastUnread;
@@ -354,39 +395,70 @@ class GLSupportChat {
   ///
   /// Always opens something useful: the messenger, or — if it cannot sign
   /// in, or [configure] was never called — a screen with Try again and the
-  /// [GLSupportChatFallback] contacts.
+  /// [GLSupportChatFallback] contacts. Opened again for the same customer it
+  /// shows at once what it had, and refreshes behind it. Called while it is
+  /// already open (a push tapped), it goes to [screen] in the messenger that
+  /// is up rather than opening a second one; the future is that one's.
   static Future<void> present(BuildContext context, {GLSupportChatScreen screen = GLSupportChatScreen.home}) async {
     final api = _api;
-    _open?.dispose();
-    final controller = api == null
-        ? null
-        : MessengerController(api: api, signIn: _signIn, realtimeFactory: _realtime, onDiagnostic: _diag, onUnreadChanged: _emitUnread);
-    _open = controller;
+    final shown = _shown;
+    if (api != null && shown != null && _onScreen()) {
+      _requests?.go(screen);
+      return shown;
+    }
+    MessengerController? controller;
+    if (api != null) {
+      controller = _controller;
+      if (controller == null || !identical(controller.api, api)) {
+        controller?.dispose();
+        controller = MessengerController(api: api, signIn: _signIn, realtimeFactory: _realtime, onDiagnostic: _diag, onUnreadChanged: _emitUnread);
+        _controller = controller;
+      }
+    }
     String? browserUrl;
     if (api != null) {
       try {
-        browserUrl = buildMessengerUrl(apiUrl: api.apiUrl, productId: api.productId, start: screen.value);
+        browserUrl = buildMessengerUrl(apiUrl: api.apiUrl, productId: api.productId, start: webStart(screen));
       } catch (_) {
         browserUrl = null; // an unusable apiUrl: no browser option, not a crash
       }
     }
-    final page = GLSupportChatPage(controller: controller, screen: screen, fallback: _fallback, browserUrl: browserUrl);
-    try {
-      await Navigator.of(context, rootNavigator: true).push(
-        PageRouteBuilder<void>(
-          settings: const RouteSettings(name: messengerRoutePrefix),
-          pageBuilder: (_, __, ___) => page,
-          transitionsBuilder: (_, animation, __, child) => SlideTransition(
-            position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
-                .animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
-            child: child,
-          ),
-        ),
-      );
-    } finally {
-      if (identical(_open, controller)) _open = null;
-      controller?.dispose();
+    final requests = MessengerRequests();
+    final page = GLSupportChatPage(controller: controller, screen: screen, fallback: _fallback, browserUrl: browserUrl, requests: requests);
+    final route = PageRouteBuilder<void>(
+      settings: const RouteSettings(name: messengerRoutePrefix),
+      pageBuilder: (_, __, ___) => page,
+      transitionsBuilder: (_, animation, __, child) => SlideTransition(
+        position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
+            .animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
+        child: child,
+      ),
+    );
+    final closed = Completer<void>();
+    if (controller != null) {
+      _shown = closed.future;
+      _requests = requests;
     }
+    try {
+      // Closed — or gone without being closed, when the app's navigator is
+      // torn down under it: then the route's future never completes.
+      await Future.any<void>(<Future<void>>[Navigator.of(context, rootNavigator: true).push(route), requests.gone]);
+    } finally {
+      // The controller stays for the next open; the page lets it go quiet
+      // (detach) when it has gone.
+      if (identical(_shown, closed.future)) _forgetShown();
+      closed.complete();
+    }
+  }
+
+  /// The messenger is up. A navigator can go without closing it (the app
+  /// rebuilt its MaterialApp): then its page has gone, and the next [present]
+  /// opens a new one rather than talk to a page that is not there.
+  static bool _onScreen() => _shown != null && !(_requests?.isGone ?? true);
+
+  static void _forgetShown() {
+    _shown = null;
+    _requests = null;
   }
 
   /// Help centre, straight in.
@@ -402,7 +474,25 @@ class GLSupportChat {
   static String messengerUrl({GLSupportChatScreen screen = GLSupportChatScreen.home}) {
     final api = _api;
     if (api == null) throw StateError('GLSupportChat.configure() has not been called');
-    return buildMessengerUrl(apiUrl: api.apiUrl, productId: api.productId, start: screen.value, identity: _identity?.isVerified == true ? _identity!.toJson() : null);
+    return buildMessengerUrl(apiUrl: api.apiUrl, productId: api.productId, start: webStart(screen), identity: _identity?.isVerified == true ? _identity!.toJson() : null);
+  }
+
+  /// The messenger state kept for the customer signed in now — for tests.
+  @visibleForTesting
+  static MessengerController? get debugMessenger => _controller;
+
+  /// Forget the customer, the kept messenger and any sign-in still out —
+  /// for tests, so one that failed half way leaves nothing for the next.
+  @visibleForTesting
+  static void debugReset() {
+    _identity = null;
+    _generation++;
+    _signingIn = null;
+    _forgetShown();
+    _controller?.dispose();
+    _controller = null;
+    _authFailures = 0;
+    _authPausedUntil = null;
   }
 
   /// Replace the HTTP client, the session store or the live connection —
@@ -505,6 +595,8 @@ class GLSupportChat {
   }
 
   static void _onLifecycle(AppLifecycleState state) {
+    // The messenger, open or kept: away, nothing counts as read; back, it catches up.
+    _controller?.lifecycleChanged(state);
     final foreground = state == AppLifecycleState.resumed;
     if (foreground == _foreground) return;
     _foreground = foreground;
@@ -541,7 +633,8 @@ class GLSupportChat {
   }
 }
 
-/// Stops the badge polling while the app is in the background.
+/// Stops the badge polling while the app is in the background, and tells the
+/// messenger when the app goes and comes back.
 class _Lifecycle with WidgetsBindingObserver {
   void attach() => WidgetsBinding.instance.addObserver(this);
 

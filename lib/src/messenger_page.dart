@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import 'api/models.dart';
 import 'core/controller.dart';
 import 'fallback.dart';
 import 'links.dart';
@@ -16,15 +19,65 @@ class GLSupportChatScreen {
   /// Home: greeting, "Send us a message", recent conversation, help search.
   static const home = GLSupportChatScreen._('home');
 
-  /// The Messages list — straight into the open conversation when it has
-  /// unread replies (what a push notification's tap wants).
+  /// The Messages list — straight into the conversation with unread
+  /// replies, once the messenger has checked (what a push notification's
+  /// tap wants).
   static const messages = GLSupportChatScreen._('messages');
   static const help = GLSupportChatScreen._('help');
 
   /// A single help-centre article, by slug.
   factory GLSupportChatScreen.article(String slug) => GLSupportChatScreen._('article:$slug');
 
+  /// One conversation, by id — the `conversationId` a push notification
+  /// carries. The open one to reply in; a closed one to read.
+  factory GLSupportChatScreen.conversation(String id) => GLSupportChatScreen._('conversation:$id');
+
+  /// The screen a tapped push notification asks for: its conversation, or
+  /// the Messages list when it names none. Null when the push is not
+  /// GL Support Chat's (its `data['type']` is not `message`).
+  static GLSupportChatScreen? fromPush(Map<String, dynamic> data) {
+    if (data['type'] != 'message') return null;
+    final id = data['conversationId'];
+    return id is String && id.trim().isNotEmpty ? GLSupportChatScreen.conversation(id.trim()) : messages;
+  }
+
   String? get articleSlug => value.startsWith('article:') ? value.substring('article:'.length) : null;
+
+  /// The conversation it opens, if it is one.
+  String? get conversationId => value.startsWith('conversation:') ? value.substring('conversation:'.length) : null;
+}
+
+/// What the hosted web messenger's `start` understands for [screen]: it
+/// opens on the list when asked for one conversation.
+String webStart(GLSupportChatScreen screen) => screen.conversationId != null ? GLSupportChatScreen.messages.value : screen.value;
+
+/// A screen asked for while the messenger is already up — a push tapped, or
+/// `present` again — so it goes there instead of opening a second messenger.
+class MessengerRequests extends ChangeNotifier {
+  GLSupportChatScreen? _screen;
+  final _gone = Completer<void>();
+
+  /// Done when the page has gone: closed, or its navigator torn down
+  /// without closing it (the app rebuilt its MaterialApp) — then nothing is
+  /// on screen to take a request, and the next present opens a new one.
+  Future<void> get gone => _gone.future;
+  bool get isGone => _gone.isCompleted;
+
+  void _pageGone() {
+    if (!_gone.isCompleted) _gone.complete();
+  }
+
+  void go(GLSupportChatScreen screen) {
+    _screen = screen;
+    notifyListeners();
+  }
+
+  /// The screen asked for, once.
+  GLSupportChatScreen? take() {
+    final s = _screen;
+    _screen = null;
+    return s;
+  }
 }
 
 /// The messenger, full screen, drawn natively.
@@ -33,7 +86,8 @@ class GLSupportChatScreen {
 /// there is a spinner and a close button; if it cannot sign in — no signal,
 /// our server down, [controller] null because `configure()` was never called
 /// — a native screen offers Try again and ways to reach the team that do not
-/// depend on our servers ([fallback]).
+/// depend on our servers ([fallback]). Opened again for the same customer it
+/// shows what it had at once, and refreshes behind it.
 class GLSupportChatPage extends StatefulWidget {
   const GLSupportChatPage({
     super.key,
@@ -41,6 +95,7 @@ class GLSupportChatPage extends StatefulWidget {
     this.screen = GLSupportChatScreen.home,
     this.fallback = const GLSupportChatFallback(),
     this.browserUrl,
+    this.requests,
   });
 
   final MessengerController? controller;
@@ -50,32 +105,170 @@ class GLSupportChatPage extends StatefulWidget {
   /// The hosted messenger in a browser, offered on the failure screen.
   final String? browserUrl;
 
+  /// Screens asked for while this one is open.
+  final MessengerRequests? requests;
+
   @override
   State<GLSupportChatPage> createState() => _GLSupportChatPageState();
 }
 
 class _GLSupportChatPageState extends State<GLSupportChatPage> {
-  bool _startHandled = false;
+  /// The screen still to open on top of the tabs: the one asked for at the
+  /// start, or since. Some wait for fresh data (which conversation is unread).
+  GLSupportChatScreen? _pending;
+  late int _tab;
+
+  /// Moves on to show the tabs afresh on the tab a request asks for.
+  int _tabsVersion = 0;
+  int _resets = 0;
+  ModalRoute<Object?>? _route;
+
+  /// A context under the scope and the messenger's theme, for the screens
+  /// this opens.
+  BuildContext? _inner;
+  bool _openScheduled = false;
 
   @override
   void initState() {
     super.initState();
+    _pending = widget.screen;
+    _tab = _tabFor(widget.screen);
     final c = widget.controller;
-    if (c != null && c.phase != MessengerPhase.ready) c.start();
+    if (c != null) {
+      _resets = c.resets;
+      c.attach();
+    }
+    widget.requests?.addListener(_onRequest);
+    // Asked for while this was on its way up (a push tapped during the opening).
+    final early = widget.requests?.take();
+    if (early != null) _goTo(early);
   }
 
-  /// Once, when the messenger is first ready: the screen it was asked to open.
-  void _openStartScreen(BuildContext context, MessengerController c) {
-    if (_startHandled) return;
-    _startHandled = true;
-    final slug = widget.screen.articleSlug;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+  }
+
+  @override
+  void didUpdateWidget(GLSupportChatPage old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.requests, widget.requests)) {
+      old.requests?.removeListener(_onRequest);
+      widget.requests?.addListener(_onRequest);
+    }
+    if (!identical(old.controller, widget.controller)) {
+      old.controller?.detach();
+      widget.controller?.attach();
+      _resets = widget.controller?.resets ?? 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.requests
+      ?..removeListener(_onRequest)
+      .._pageGone();
+    widget.controller?.detach();
+    super.dispose();
+  }
+
+  static int _tabFor(GLSupportChatScreen screen) {
+    if (screen == GLSupportChatScreen.messages || screen.conversationId != null) return 1;
+    if (screen == GLSupportChatScreen.help) return 2;
+    return 0;
+  }
+
+  void _goTo(GLSupportChatScreen screen) {
+    _pending = screen;
+    _tab = _tabFor(screen);
+    _tabsVersion++;
+  }
+
+  void _onRequest() {
+    final screen = widget.requests?.take();
+    final c = widget.controller;
+    if (screen == null || !mounted || c == null) return;
+    // Already reading the conversation it is about: stay there.
+    final aboutLive = screen == GLSupportChatScreen.messages || (screen.conversationId != null && screen.conversationId == c.liveId);
+    if (c.viewingLive && aboutLive) return;
+    _closeScreensAbove();
+    setState(() => _goTo(screen));
+    // A push tapped: what it is about may have arrived only just now.
+    if (screen == GLSupportChatScreen.messages || screen.conversationId != null) unawaited(c.refresh());
+  }
+
+  /// Back to the tabs: close whatever the customer had opened over them.
+  void _closeScreensAbove() {
+    final route = _route;
+    if (route == null || !route.isActive || route.isCurrent) return;
+    Navigator.of(context).popUntil((r) => r == route);
+  }
+
+  void _scheduleOpen(MessengerController c) {
+    if (_pending == null || _openScheduled) return;
+    _openScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!context.mounted) return;
-      if (slug != null) {
-        openArticle(context, slug);
-      } else if (widget.screen == GLSupportChatScreen.messages && c.liveId != null && c.totalUnread > 0) {
-        openLiveConversation(context);
-      }
+      _openScheduled = false;
+      final inner = _inner;
+      if (!mounted || inner == null || !inner.mounted) return;
+      _openPending(inner, c);
+    });
+  }
+
+  /// Open the screen asked for, once it can be: an article or the open
+  /// conversation at once; for the rest, once the messenger knows which
+  /// conversation has the unread reply.
+  void _openPending(BuildContext context, MessengerController c) {
+    final screen = _pending;
+    if (screen == null || c.phase != MessengerPhase.ready) return;
+    // The customer has opened something themselves meanwhile: leave them there.
+    final route = _route;
+    if (route != null && !route.isCurrent) {
+      _pending = null;
+      return;
+    }
+    final slug = screen.articleSlug;
+    if (slug != null) {
+      _pending = null;
+      openArticle(context, slug);
+      return;
+    }
+    final id = screen.conversationId;
+    if (id != null) {
+      if (id != c.liveId && c.refreshing) return; // it may be the open one by now
+      _pending = null;
+      _openConversation(context, c, id);
+      return;
+    }
+    if (screen == GLSupportChatScreen.messages) {
+      if (c.refreshing) return;
+      _pending = null;
+      final unread = c.unreadConversationId;
+      if (unread != null) _openConversation(context, c, unread);
+      return;
+    }
+    _pending = null;
+  }
+
+  void _openConversation(BuildContext context, MessengerController c, String id) {
+    if (id == c.liveId) {
+      openLiveConversation(context);
+      return;
+    }
+    ConversationSummary? row;
+    for (final r in c.conversations) {
+      if (r.id == id) row = r;
+    }
+    openConversation(context, row ?? ConversationSummary(id: id, open: false, lastMessageAt: DateTime.now()));
+  }
+
+  /// Someone else signed in (or nobody) while it was open: nothing opened
+  /// for the customer before stays on screen.
+  void _afterReset() {
+    _pending = null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _closeScreensAbove();
     });
   }
 
@@ -91,16 +284,19 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
         return Theme(
           data: messengerTheme(context, controller.brand),
           child: Builder(builder: (context) {
+            _inner = context;
+            if (controller.resets != _resets) {
+              _resets = controller.resets;
+              _afterReset();
+            }
             switch (controller.phase) {
               case MessengerPhase.loading:
                 return const _Loading();
               case MessengerPhase.failed:
                 return _FallbackScreen(fallback: widget.fallback, browserUrl: widget.browserUrl, onRetry: controller.start);
               case MessengerPhase.ready:
-                _openStartScreen(context, controller);
-                return MessengerTabs(
-                  initialTab: widget.screen == GLSupportChatScreen.messages ? 1 : (widget.screen == GLSupportChatScreen.help ? 2 : 0),
-                );
+                _scheduleOpen(controller);
+                return MessengerTabs(key: ValueKey<int>(_tabsVersion), initialTab: _tab);
             }
           }),
         );

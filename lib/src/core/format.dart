@@ -16,11 +16,12 @@ String greetingFor(MessengerSession s) {
 
 /// The status line under "Send us a message" and in the chat header.
 ///
-/// [agentsOnline] null means not known yet (before the connection, or while
-/// reconnecting) — that reads as the neutral, positive line, never "away".
+/// [agentsOnline] null means not known (before the connection says, while
+/// connecting or reconnecting) — that reads as the neutral, positive line,
+/// never "away", and never "Active now": nobody may be.
 /// Someone online outranks the clock.
 ({String home, String header, bool away}) presenceLines(int? agentsOnline, OfficeHours? hours) {
-  if (agentsOnline == null) return (home: 'We typically reply in a few minutes', header: 'Active now', away: false);
+  if (agentsOnline == null) return (home: 'We typically reply in a few minutes', header: 'Typically replies in a few minutes', away: false);
   if (agentsOnline > 0) return (home: "We're online — reply in a few minutes", header: 'Active now', away: false);
   final opens = hours?.opensLabel;
   if (hours != null && !hours.open && opens != null && opens.isNotEmpty) {
@@ -103,8 +104,9 @@ String bodyBesideFiles(ChatMessage m) {
   return m.body.replaceFirst(RegExp(r'^\[(Photo|Document)\]\s?'), '');
 }
 
-/// How many characters the AI typewriter releases per 25 ms tick: one when
-/// little is waiting, catching up at up to eight when a lot is.
+/// How many characters the AI typewriter releases per 25 ms of typing: one
+/// when little is waiting, catching up at up to eight when a lot is. (The
+/// controller draws three of these steps at a time, every 75 ms.)
 int dripStep(int buffered) {
   final n = buffered ~/ 20;
   return n < 1 ? 1 : (n > 8 ? 8 : n);

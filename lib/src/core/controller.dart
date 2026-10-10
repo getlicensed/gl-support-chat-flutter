@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
@@ -30,6 +31,11 @@ class OutgoingMessage {
   String? uploadId;
   String? error;
   bool get failed => error != null;
+
+  /// Waiting for the connection: it goes by itself, in the order it was
+  /// written, as soon as the messenger is connected. False while it is
+  /// being sent, and once it has failed.
+  bool queued = false;
 }
 
 /// The customer's answer to a CSAT question (the five faces, then a comment).
@@ -44,12 +50,24 @@ class CsatAnswer {
   String? error;
 }
 
+/// A message waiting its turn to be sent, and whoever is waiting on it.
+class _Send {
+  _Send(this.out);
+  final OutgoingMessage out;
+  final done = Completer<bool>();
+}
+
 /// Everything the messenger screens show and do, in one place.
 ///
 /// It follows the website messenger rule for rule,
 /// with the fixes that spec called for: a refused message says why, a
 /// reconnect fetches what was missed, and an expired visitor token is renewed
 /// instead of leaving the chat on "Reconnecting…" for good.
+///
+/// One controller lives for as long as the same customer is signed in, so
+/// the messenger opens at once from what it already holds and refreshes
+/// behind it. The screens [attach] while they show it and [detach] when they
+/// close; a sign-out, or someone else signing in, calls [reset] or disposes it.
 class MessengerController extends ChangeNotifier {
   MessengerController({
     required this.api,
@@ -78,6 +96,15 @@ class MessengerController extends ChangeNotifier {
   BrandColors brand = BrandColors(null);
   String? visitorEmail;
 
+  /// True while the open conversation and the Messages list are being
+  /// fetched. On a reopen the screens already show what was there; this says
+  /// it may be about to change.
+  bool refreshing = false;
+
+  /// Moves on at every [reset]: the screens close whatever they had opened
+  /// for the customer before.
+  int resets = 0;
+
   // ---- the Messages list ----------------------------------------------
   List<ConversationSummary> conversations = <ConversationSummary>[];
   bool conversationsLoaded = false;
@@ -99,16 +126,25 @@ class MessengerController extends ChangeNotifier {
   String? sendError;
   bool viewingLive = false;
 
+  /// What the customer has typed and not sent ([composerChanged] keeps it),
+  /// there again at the next open; dropped with everything else when
+  /// someone else signs in.
+  String draft = '';
+
   // ---- realtime ----------------------------------------------------------
   RealtimeChannel? _channel;
   StreamSubscription<RealtimeEvent>? _events;
   LinkState link = LinkState.connecting;
 
-  /// Teammates connected right now; null while not known.
+  /// Teammates connected right now; null while not known — before the
+  /// connection says, and whenever it is not connected.
   int? agentsOnline;
-  bool _everConnected = false;
   Timer? _reauthTimer;
   int _reauthFailures = 0;
+
+  /// The live connection is up. Sending does not wait on the screens for
+  /// it: [send] queues until it is.
+  bool get connected => link == LinkState.connected;
 
   // ---- CSAT, help, files ---------------------------------------------------
   final Map<String, CsatAnswer> csat = <String, CsatAnswer>{};
@@ -130,93 +166,414 @@ class MessengerController extends ChangeNotifier {
   int _seq = 0;
   bool _disposed = false;
 
+  // ---- whose it is, and who is looking ---------------------------------------
+
+  /// Moves on at every [reset]. Whatever was on its way for the customer
+  /// before (a sign-in, a load, a message) compares it when it lands, and is
+  /// dropped if it moved.
+  int _epoch = 0;
+  Future<void>? _startRun;
+  Future<void>? _loadRun;
+  int _attached = 0;
+
+  /// The screens have closed: the connection goes once nothing is left to send.
+  bool _suspended = false;
+  Timer? _idleTimer;
+
+  /// The app is in front. While it is not, nothing counts as read.
+  bool _appActive = true;
+  bool _backgrounded = false;
+
+  // ---- sending in order ------------------------------------------------------
+  final List<_Send> _queue = <_Send>[];
+  bool _delivering = false;
+  final List<Completer<void>> _linkWaiters = <Completer<void>>[];
+
+  // ---- redraws ---------------------------------------------------------------
+  int? _frameCallback;
+  bool _afterFrame = false;
+
   // ======================================================================
   // Start
   // ======================================================================
 
-  /// Sign in, load the conversations and the open thread, then go live.
-  /// A failure leaves [phase] failed with a reason; [start] again retries.
-  Future<void> start() async {
-    _closeChannel();
-    phase = MessengerPhase.loading;
-    failure = null;
-    _notify();
-    final started = _now();
+  /// A messenger screen shows this controller: bring it up to date.
+  void attach() {
+    _attached++;
+    unawaited(start());
+  }
+
+  /// A messenger screen closed. When none is left the connection closes —
+  /// once the messages still waiting to go have gone — and everything shown
+  /// is kept for the next open.
+  void detach() {
+    if (_attached > 0) _attached--;
+    if (_attached == 0) _suspend();
+  }
+
+  /// Sign in, load the conversations and the open thread, and go live.
+  ///
+  /// The first time, [phase] is loading until all of that is in; a failure
+  /// leaves it failed with a reason, and [start] again retries. Once it has
+  /// been ready (a reopen), the screens keep showing what is there while it
+  /// refreshes behind them, and a failure leaves it as it was.
+  Future<void> start() {
+    _suspended = false;
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    final running = _startRun;
+    if (running != null) {
+      // Closed and opened again while it was still out: the connection may
+      // have been closed meanwhile.
+      if (session != null && api.token != null) _ensureChannel();
+      return running;
+    }
+    final run = _start();
+    _startRun = run;
+    return run.whenComplete(() {
+      if (identical(_startRun, run)) _startRun = null;
+    });
+  }
+
+  Future<void> _start() async {
+    final epoch = _epoch;
+    final cached = phase == MessengerPhase.ready;
+    final opened = _now();
+    _lastUnread = -1; // the badge may have moved while it was closed: say the count again
+    Future<void>? loads;
+    if (cached) {
+      // What is on screen may be about to change — from the moment it opens,
+      // so a push's "which conversation" waits for the answer.
+      refreshing = true;
+      _notify();
+      if (api.token != null) {
+        // The same customer, with the token from last time: catch up and go
+        // live straight away, while the sign-in refreshes the session alongside.
+        loads = _loads(epoch);
+        _ensureChannel();
+      }
+    } else {
+      phase = MessengerPhase.loading;
+      failure = null;
+      _notify();
+    }
     try {
       final s = await signIn();
+      if (epoch != _epoch) return;
       session = s;
       brand = BrandColors(s.brandColor);
       visitorEmail = s.email;
-      unawaited(loadArticles());
-
-      OpenConversationInfo open;
-      try {
-        open = await api.openConversation();
-      } catch (_) {
-        open = const OpenConversationInfo(); // the catch-up on connect tries again
-      }
-      pendingCsatRatingId = open.pendingCsatRatingId;
-      liveId = open.conversationId;
-      await refreshConversations();
-      if (liveId != null) {
-        await _loadLive(unread: open.unreadCount);
-      } else {
-        await _loadPreview();
-      }
-      phase = MessengerPhase.ready;
-      _diag('messenger_ready', <String, Object?>{'ms': _now().difference(started).inMilliseconds});
-      _notify();
-      _connect();
     } catch (e) {
-      phase = MessengerPhase.failed;
-      failure = e is ApiException ? e.message : '$e';
-      _diag('messenger_failed', <String, Object?>{
-        'reason': e is ApiException && e.status == 0 ? 'network' : 'http_${e is ApiException ? e.status : 0}',
-        'detail': failure,
-      });
+      if (epoch != _epoch) return;
+      if (!cached) {
+        phase = MessengerPhase.failed;
+        failure = e is ApiException ? e.message : '$e';
+        _diag('messenger_failed', <String, Object?>{
+          'reason': e is ApiException && e.status == 0 ? 'network' : 'http_${e is ApiException ? e.status : 0}',
+          'detail': failure,
+        });
+        _notify();
+        return;
+      }
+      // Keep what is on screen. The connection keeps trying, renewing the
+      // token itself, and its connect catches up.
+      _ensureChannel();
+      if (loads != null) await loads;
+      if (epoch != _epoch) return;
+      refreshing = _loadRun != null; // a connect may have started a catch-up meanwhile
       _notify();
+      if (_suspended) _closeWhenIdle();
+      return;
+    }
+    unawaited(loadArticles());
+    // The loads and the connection side by side, not one after the other.
+    loads ??= _loads(epoch);
+    _ensureChannel();
+    await loads;
+    if (epoch != _epoch) return;
+    if (!cached) phase = MessengerPhase.ready;
+    _diag('messenger_ready', <String, Object?>{'ms': _now().difference(opened).inMilliseconds, if (cached) 'cached': true});
+    _notify();
+    if (_suspended) _closeWhenIdle();
+  }
+
+  /// Fetch what changed — the open conversation and the Messages list — and
+  /// merge it into what is shown, without duplicates. One at a time: a call
+  /// while one is out shares it.
+  Future<void> refresh() => session == null ? Future<void>.value() : _loads(_epoch);
+
+  Future<void> _loads(int epoch) {
+    final running = _loadRun;
+    if (running != null) return running;
+    refreshing = true;
+    _notify();
+    final run = _runLoads(epoch);
+    _loadRun = run;
+    return run;
+  }
+
+  Future<void> _runLoads(int epoch) async {
+    try {
+      // Each catches its own failure: one that fails never blanks the other.
+      await Future.wait<void>(<Future<void>>[_loadOpen(epoch), refreshConversations()]);
+    } finally {
+      if (epoch == _epoch) {
+        _loadRun = null;
+        refreshing = false;
+        _notify();
+      }
     }
   }
 
-  Future<void> _loadLive({int unread = 0}) async {
-    final id = liveId;
-    if (id == null) return;
-    final d = await api.conversation(id);
-    live
-      ..clear()
-      ..addAll(d.messages.where((m) => !m.isSystem));
-    agentSeenAt = d.agentLastSeenAt;
-    _seedCsat(d.csat);
-    preview = null;
-    dividerIndex = unread > 0 ? (live.length - unread).clamp(0, live.length) : -1;
+  /// Which conversation is open, and its messages; or the opening menu.
+  Future<void> _loadOpen(int epoch) async {
+    final before = liveId;
+    OpenConversationInfo open;
+    try {
+      open = await api.openConversation();
+    } catch (_) {
+      if (epoch != _epoch) return;
+      // Not known right now: keep what is shown; with nothing shown, the
+      // opening menu as before. The next catch-up asks again.
+      if (liveId == null && live.isEmpty) await _loadPreview(epoch);
+      return;
+    }
+    if (epoch != _epoch) return;
+    pendingCsatRatingId = open.pendingCsatRatingId;
+    final id = open.conversationId;
+    if (id == null) {
+      // A conversation started meanwhile (the customer wrote): that is the one.
+      if (liveId != before) return;
+      // The one shown has been closed since: start afresh — unless the
+      // customer is reading it right now; it stays until they leave.
+      if (liveId != null && !viewingLive) {
+        liveId = null;
+        live.clear();
+        agentSeenAt = null;
+        dividerIndex = -1;
+      }
+      if (liveId == null && live.isEmpty) await _loadPreview(epoch);
+      _notify();
+      return;
+    }
+    liveId = id;
+    try {
+      final d = await api.conversation(id);
+      if (epoch != _epoch || liveId != id) return;
+      _mergeLive(d, unread: open.unreadCount);
+      preview = null;
+      if (_seeing && open.unreadCount > 0) unawaited(_markSeen());
+    } catch (_) {
+      // Keep what is shown; the next catch-up tries again.
+    }
+    _notify();
   }
 
-  Future<void> _loadPreview() async {
+  /// The server's copy of the open conversation, plus what arrived over the
+  /// connection after it was read (and an AI answer still typing out).
+  void _mergeLive(ConversationDetail d, {int unread = 0}) {
+    final fetched = d.messages.where((m) => !m.isSystem).toList();
+    final ids = fetched.map((m) => m.id).toSet();
+    final since = live.where((m) => m.conversationId == d.id && !ids.contains(m.id)).toList();
+    live
+      ..clear()
+      ..addAll(fetched)
+      ..addAll(since);
+    agentSeenAt = d.agentLastSeenAt ?? agentSeenAt;
+    _seedCsat(d.csat);
+    if (unread > 0) {
+      dividerIndex = (live.length - unread).clamp(0, live.length);
+    } else if (!viewingLive) {
+      dividerIndex = -1;
+    }
+  }
+
+  Future<void> _loadPreview(int epoch) async {
     try {
-      preview = await api.workflow();
-      previewShownAt = _now();
+      final p = await api.workflow();
+      if (epoch != _epoch || liveId != null || live.isNotEmpty) return;
+      if (previewShownAt == null || p?.workflowId != preview?.workflowId) previewShownAt = _now();
+      preview = p;
     } catch (_) {
+      if (epoch != _epoch) return;
       preview = null; // no opening menu, the customer can still type
     }
   }
 
   /// Reload the Messages list (newest first).
   Future<void> refreshConversations() async {
+    final epoch = _epoch;
     try {
-      conversations = await api.conversations();
+      final rows = await api.conversations();
+      if (epoch != _epoch) return;
+      conversations = rows;
       conversationsLoaded = true;
-      if (viewingLive) _zeroUnread(liveId);
+      if (_seeing) _zeroUnread(liveId);
       _emitUnread();
       _notify();
     } catch (_) {
+      if (epoch != _epoch) return;
       conversationsLoaded = true; // keep what was there; an empty list is not an error
       _notify();
     }
   }
 
+  /// Forget everything this customer's messenger holds — conversations,
+  /// messages, the draft, messages still waiting to go — at once: someone
+  /// else is signed in now, or nobody. Whatever was still on its way for them
+  /// is dropped when it lands. [start] then begins afresh.
+  void reset() {
+    _epoch++;
+    resets++;
+    _closeChannel();
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    _agentTypingTimer?.cancel();
+    _visitorTypingTimer?.cancel();
+    _visitorTyping = false;
+    _drip?.cancel();
+    _streamId = null;
+    _streamBuffer = '';
+    _streamFinalId = null;
+    _emailThanks?.cancel();
+    _releaseWaiting();
+    _startRun = null;
+    _loadRun = null;
+    _delivering = false;
+    phase = MessengerPhase.loading;
+    failure = null;
+    session = null;
+    visitorEmail = null;
+    refreshing = false;
+    conversations = <ConversationSummary>[];
+    conversationsLoaded = false;
+    liveId = null;
+    live.clear();
+    outgoing.clear();
+    agentSeenAt = null;
+    dividerIndex = -1;
+    preview = null;
+    previewShownAt = null;
+    pendingCsatRatingId = null;
+    settledPrompts.clear();
+    flowBusy = false;
+    flowNotice = null;
+    collectError = null;
+    agentTyping = false;
+    sendError = null;
+    draft = '';
+    link = LinkState.connecting;
+    agentsOnline = null;
+    _reauthFailures = 0;
+    csat.clear();
+    articles = <ArticleSummary>[];
+    articlesLoaded = false;
+    helpUrl = null;
+    _files.clear();
+    emailSavedFor = null;
+    _lastUnread = -1;
+    _notify();
+  }
+
+  // ======================================================================
+  // While it is closed, and while the app is away
+  // ======================================================================
+
+  void _suspend() {
+    _suspended = true;
+    _stopVisitorTyping();
+    _agentTypingTimer?.cancel();
+    agentTyping = false;
+    _settleStream();
+    _closeWhenIdle();
+  }
+
+  /// Close the connection — unless messages are still waiting to go: they
+  /// get a minute to, then they wait for the next open.
+  void _closeWhenIdle() {
+    if (!_suspended || _disposed) return;
+    if (_queue.isNotEmpty) {
+      _idleTimer ??= Timer(const Duration(seconds: 60), () {
+        _idleTimer = null;
+        if (_suspended) _hangUp();
+      });
+      return;
+    }
+    _hangUp();
+  }
+
+  void _hangUp() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    _closeChannel();
+    link = LinkState.connecting;
+    agentsOnline = null; // stale by the next open
+    _notify();
+  }
+
+  /// An AI answer half typed out when the messenger closes: finished at once
+  /// if its end has arrived, else dropped — the next open fetches it whole.
+  void _settleStream() {
+    final id = _streamId;
+    if (id == null) return;
+    final m = _liveById(id);
+    final finalId = _streamFinalId;
+    _drip?.cancel();
+    _streamId = null;
+    _streamFinalId = null;
+    if (m != null && finalId != null) {
+      m.body += _streamBuffer;
+      _finishStream(m, finalId);
+    } else {
+      live.removeWhere((x) => x.id == id);
+    }
+    _streamBuffer = '';
+  }
+
+  /// The app went to the background or came back (the package's one
+  /// lifecycle observer passes it on). Away, nothing counts as read; back,
+  /// it reconnects if it has to and fetches what arrived meanwhile.
+  void lifecycleChanged(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      _appActive = false;
+      if (state != AppLifecycleState.inactive) _backgrounded = true;
+      _stopVisitorTyping();
+      return;
+    }
+    if (_appActive) return;
+    _appActive = true;
+    final wasAway = _backgrounded;
+    _backgrounded = false;
+    if (_suspended || session == null || _disposed) return;
+    final ch = _channel;
+    if (ch == null) {
+      _ensureChannel();
+    } else if (!ch.connected) {
+      ch.connect();
+    }
+    // What came while it was away is on the customer's screen now: read.
+    if (_seeing && conversations.any((c) => c.id == liveId && c.unreadCount > 0)) unawaited(_markSeen());
+    // Back from the background (not just a glance at the control centre):
+    // what came without the connection too.
+    if (wasAway) unawaited(refresh());
+  }
+
+  /// The customer is looking at the live conversation, in an app in front.
+  bool get _seeing => viewingLive && _appActive;
+
   // ======================================================================
   // Realtime
   // ======================================================================
+
+  /// The connection: made if there is none, nudged if it has dropped.
+  void _ensureChannel() {
+    final ch = _channel;
+    if (ch == null) {
+      _connect();
+    } else if (!ch.connected) {
+      ch.connect();
+    }
+  }
 
   void _connect() {
     _closeChannel();
@@ -239,12 +596,16 @@ class MessengerController extends ChangeNotifier {
     final data = e.data is Map ? Map<String, dynamic>.from(e.data! as Map) : <String, dynamic>{};
     switch (e.name) {
       case 'connect':
-        final again = _everConnected;
-        _everConnected = true;
         _reauthFailures = 0;
         link = LinkState.connected;
         _notify();
-        if (again) unawaited(_catchUp());
+        for (final w in List<Completer<void>>.of(_linkWaiters)) {
+          if (!w.isCompleted) w.complete();
+        }
+        // What arrived while it was not connected. While the loads are out
+        // they cover it; after them, a connect may follow a gap.
+        if (_loadRun == null) unawaited(refresh());
+        unawaited(_pump());
       case 'disconnect':
         link = LinkState.reconnecting;
         agentsOnline = null;
@@ -263,24 +624,32 @@ class MessengerController extends ChangeNotifier {
         _onMessage(data);
       case 'presence:update':
         final n = data['agentsOnline'];
-        agentsOnline = n is num ? n.toInt() : null;
+        final online = n is num ? n.toInt() : null;
+        if (online == agentsOnline) return; // the same again: nothing to redraw
+        agentsOnline = online;
         _notify();
       case 'conversation:seen':
         if (data['seenBy'] == 'agent' && _inLive(data)) {
-          agentSeenAt = DateTime.tryParse('${data['seenAt']}')?.toLocal() ?? agentSeenAt;
+          final at = DateTime.tryParse('${data['seenAt']}')?.toLocal() ?? agentSeenAt;
+          if (at == agentSeenAt) return;
+          agentSeenAt = at;
           _notify();
         }
       case 'typing:start':
       case 'typing:stop':
         if (data['authorType'] == 'visitor' || !_inLive(data)) return;
         _agentTypingTimer?.cancel();
-        agentTyping = e.name == 'typing:start';
-        if (agentTyping) {
+        final typing = e.name == 'typing:start';
+        if (typing) {
           _agentTypingTimer = Timer(const Duration(seconds: 5), () {
             agentTyping = false;
             _notify();
           });
         }
+        // An agent typing says so again and again: the dots are already
+        // there, only their timer moves.
+        if (typing == agentTyping) return;
+        agentTyping = typing;
         _notify();
       case 'ai:stream_start':
         _onStreamStart(data);
@@ -314,9 +683,10 @@ class MessengerController extends ChangeNotifier {
   void _renewTokenAndReconnect() {
     if (_reauthTimer?.isActive ?? false) return;
     final wait = _reauthFailures == 0 ? Duration.zero : Duration(seconds: (5 << (_reauthFailures - 1)).clamp(5, 60));
+    final epoch = _epoch;
     _reauthTimer = Timer(wait, () async {
       final token = await api.reauthenticate?.call();
-      if (_disposed) return;
+      if (_disposed || epoch != _epoch) return;
       if (token == null) {
         _reauthFailures++;
         _renewTokenAndReconnect();
@@ -324,32 +694,6 @@ class MessengerController extends ChangeNotifier {
       }
       _channel?.connect();
     });
-  }
-
-  /// After a reconnect: what arrived while we were away.
-  Future<void> _catchUp() async {
-    try {
-      if (liveId == null) {
-        final open = await api.openConversation();
-        if (open.conversationId == null) return;
-        liveId = open.conversationId;
-      }
-      final d = await api.conversation(liveId!);
-      final known = live.map((m) => m.id).toSet();
-      final missed = d.messages.where((m) => !m.isSystem && !known.contains(m.id)).toList()
-        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
-      if (missed.isNotEmpty) {
-        preview = null;
-        live.addAll(missed);
-      }
-      agentSeenAt = d.agentLastSeenAt ?? agentSeenAt;
-      _seedCsat(d.csat);
-      await refreshConversations();
-      if (viewingLive && missed.any((m) => !m.fromVisitor)) unawaited(_markSeen());
-      _notify();
-    } catch (_) {
-      // the next reconnect tries again
-    }
   }
 
   bool _inLive(Map<String, dynamic> data) {
@@ -367,18 +711,19 @@ class MessengerController extends ChangeNotifier {
   void _onMessage(Map<String, dynamic> data) {
     final msg = ChatMessage.fromJson(data);
     if (msg.id.isEmpty || msg.isSystem) return;
+    // Already here (a catch-up brought it first): counted once, drawn once.
+    if (msg.conversationId == liveId && _liveById(msg.id) != null) return;
     _touchList(msg);
     liveId ??= msg.conversationId;
     if (msg.conversationId != liveId) {
       _notify();
       return;
     }
-    if (_liveById(msg.id) != null) return;
     preview = null;
     if (!msg.fromVisitor) {
       agentTyping = false;
       _agentTypingTimer?.cancel();
-      if (viewingLive) {
+      if (_seeing) {
         unawaited(_markSeen());
       } else if (dividerIndex < 0) {
         dividerIndex = live.length;
@@ -405,13 +750,19 @@ class MessengerController extends ChangeNotifier {
       ..lastAuthorName = msg.authorName
       ..lastMessageAt = msg.createdAt
       ..open = true;
-    final onScreen = viewingLive && msg.conversationId == liveId;
+    final onScreen = _seeing && msg.conversationId == liveId;
     if (!msg.fromVisitor && !onScreen) row.unreadCount += 1;
     conversations.sort((a, b) => b.lastMessageAt.compareTo(a.lastMessageAt));
     _emitUnread();
   }
 
   // ---- AI answers, typed out as they stream ---------------------------------
+
+  /// The typewriter's pace: a step every 75 ms, releasing three of
+  /// [dripStep]'s 25 ms steps at once. Every step redraws the thread, so 13
+  /// a second rather than 40 keeps the phone cool while the AI types, at the
+  /// same reading speed.
+  static const _dripEvery = Duration(milliseconds: 75);
 
   void _onStreamStart(Map<String, dynamic> data) {
     if (!_inLive(data)) return;
@@ -431,13 +782,13 @@ class MessengerController extends ChangeNotifier {
     _streamId = id;
     _streamBuffer = '';
     _streamFinalId = null;
-    if (!viewingLive && dividerIndex < 0) dividerIndex = live.length - 1;
+    if (!_seeing && dividerIndex < 0) dividerIndex = live.length - 1;
     _notify();
   }
 
   void _ensureDrip() {
     if (_drip?.isActive ?? false) return;
-    _drip = Timer.periodic(const Duration(milliseconds: 25), (_) => _dripTick());
+    _drip = Timer.periodic(_dripEvery, (_) => _dripTick());
   }
 
   void _dripTick() {
@@ -448,7 +799,8 @@ class MessengerController extends ChangeNotifier {
       return;
     }
     if (_streamBuffer.isNotEmpty) {
-      final n = dripStep(_streamBuffer.length).clamp(1, _streamBuffer.length);
+      final steps = _dripEvery.inMilliseconds ~/ 25;
+      final n = (dripStep(_streamBuffer.length) * steps).clamp(1, _streamBuffer.length);
       m.body += _streamBuffer.substring(0, n);
       _streamBuffer = _streamBuffer.substring(n);
       _notify();
@@ -456,16 +808,27 @@ class MessengerController extends ChangeNotifier {
     }
     final finalId = _streamFinalId;
     if (finalId != null) {
-      m.id = finalId;
       _streamId = null;
       _streamFinalId = null;
       _drip?.cancel();
-      _touchList(m);
-      if (viewingLive) unawaited(_markSeen());
+      _finishStream(m, finalId);
       _notify();
       return;
     }
     _drip?.cancel();
+  }
+
+  /// The typed-out answer takes its real id — or goes, if a catch-up has
+  /// already brought the real message.
+  void _finishStream(ChatMessage m, String finalId) {
+    final real = _liveById(finalId);
+    if (real != null && !identical(real, m)) {
+      live.remove(m);
+      return;
+    }
+    m.id = finalId;
+    _touchList(m);
+    if (_seeing) unawaited(_markSeen());
   }
 
   // ======================================================================
@@ -477,7 +840,7 @@ class MessengerController extends ChangeNotifier {
   void setViewingLive(bool viewing) {
     viewingLive = viewing;
     if (viewing) {
-      unawaited(_markSeen());
+      if (_appActive) unawaited(_markSeen());
     } else {
       dividerIndex = -1;
       _stopVisitorTyping();
@@ -506,21 +869,37 @@ class MessengerController extends ChangeNotifier {
   }
 
   int get totalUnread => conversations.fold(0, (sum, c) => sum + c.unreadCount);
+
+  /// The conversation a tap on "an agent replied" means: the newest one with
+  /// replies not yet read (the open one, when only its own count is known),
+  /// or null when everything has been read.
+  String? get unreadConversationId {
+    for (final c in conversations) {
+      if (c.unreadCount > 0) return c.id;
+    }
+    return liveId != null && dividerIndex >= 0 && !viewingLive ? liveId : null;
+  }
+
   int _lastUnread = -1;
 
   void _emitUnread() {
+    if (_disposed) return; // never a count for the customer before on the badge
     final n = totalUnread;
     if (n == _lastUnread) return;
     _lastUnread = n;
     onUnreadChanged?.call(n);
   }
 
-  /// Send what they typed, and/or a photo. The bubble shows at once; if the
-  /// server refuses it, the bubble says so and [retry] sends it again.
+  /// Send what they typed, and/or a photo — at any time, connected or not.
+  /// The bubble shows at once; while the connection is not up it waits
+  /// ([OutgoingMessage.queued]) and goes as soon as it is, in the order
+  /// written, never twice. If the server refuses it, the bubble says so and
+  /// [retry] sends it again. Completes with whether it was delivered.
   Future<bool> send(String text, {Uint8List? image, String? imageName, String? imageType}) {
     final body = text.trim();
     if (body.isEmpty && image == null) return Future<bool>.value(false);
     _stopVisitorTyping();
+    if (body.isNotEmpty) draft = '';
     final out = OutgoingMessage(
       localId: 'local-${++_seq}',
       text: body,
@@ -530,40 +909,99 @@ class MessengerController extends ChangeNotifier {
       imageType: imageType,
     );
     outgoing.add(out);
-    return _deliver(out);
+    return _enqueue(out);
   }
 
   Future<bool> retry(OutgoingMessage out) {
     if (!outgoing.contains(out)) return Future<bool>.value(false);
-    return _deliver(out);
+    for (final job in _queue) {
+      if (identical(job.out, out)) return job.done.future; // already on its way
+    }
+    return _enqueue(out);
   }
 
   void discard(OutgoingMessage out) {
     outgoing.remove(out);
+    // Still waiting its turn: it never goes. One already handed over cannot
+    // be taken back; it shows as sent when the server confirms it.
+    final sending = _delivering && _queue.isNotEmpty ? _queue.first : null;
+    final waiting = _queue.where((j) => identical(j.out, out) && !identical(j, sending)).toList();
+    for (final job in waiting) {
+      _queue.remove(job);
+      if (!job.done.isCompleted) job.done.complete(false);
+    }
     _notify();
   }
 
-  Future<bool> _deliver(OutgoingMessage out) async {
-    out.error = null;
+  Future<bool> _enqueue(OutgoingMessage out) {
+    final job = _Send(out);
+    out
+      ..error = null
+      ..queued = true;
+    sendError = null;
+    _queue.add(job);
+    _notify();
+    unawaited(_pump());
+    return job.done.future;
+  }
+
+  /// Send what is waiting, first written first, one at a time, while the
+  /// connection is up. A message is handed to the connection only while it
+  /// is connected: Socket.IO would otherwise hold it and send it on the next
+  /// connect, after the customer had been told it failed — a second copy on
+  /// Try again.
+  Future<void> _pump() async {
+    if (_delivering) return;
+    final epoch = _epoch;
+    _delivering = true;
+    try {
+      while (_queue.isNotEmpty && connected && _channel != null && !_disposed && epoch == _epoch) {
+        final job = _queue.first;
+        final delivered = await _deliver(job.out, epoch);
+        if (epoch != _epoch || _disposed) return; // a reset settled every job
+        if (delivered == null) break; // the connection went first: it stays first in line
+        _queue.remove(job);
+        if (!job.done.isCompleted) job.done.complete(delivered);
+      }
+    } finally {
+      if (epoch == _epoch) _delivering = false;
+    }
+    if (epoch == _epoch) _closeWhenIdle();
+  }
+
+  /// True when the server took it, false when it refused (the bubble says
+  /// why), null when the connection went before it could be handed over.
+  Future<bool?> _deliver(OutgoingMessage out, int epoch) async {
+    out
+      ..queued = false
+      ..error = null;
     sendError = null;
     _notify();
     try {
       final image = out.image;
       if (image != null && out.uploadId == null) {
         final up = await api.upload(image, name: out.imageName ?? 'photo.jpg', contentType: out.imageType ?? 'image/jpeg');
+        if (epoch != _epoch) return false;
         out.uploadId = up.id;
         _files[up.id] = Future<Uint8List>.value(image); // no need to download what we just sent
       }
       final ch = _channel;
-      if (ch == null) throw const ApiException(0, 'Not connected yet — try again in a moment.');
+      if (ch == null || !connected) {
+        out.queued = true;
+        _notify();
+        return null;
+      }
       final ack = await ch.request('visitor:message', <String, dynamic>{
         'body': out.text,
         if (out.uploadId != null) 'attachments': <String>[out.uploadId!],
       });
+      if (epoch != _epoch) return false;
       if (ack['ok'] == true && ack['message'] is Map) {
         final msg = ChatMessage.fromJson(Map<String, dynamic>.from(ack['message'] as Map));
         outgoing.remove(out);
-        liveId ??= msg.conversationId;
+        // The server put it in its open conversation: that is the live one
+        // now, even if the one shown had been closed meanwhile.
+        if (msg.conversationId.isNotEmpty) liveId = msg.conversationId;
         preview = null;
         if (_liveById(msg.id) == null) {
           live.add(msg);
@@ -574,7 +1012,11 @@ class MessengerController extends ChangeNotifier {
       }
       out.error = sendFailureText(ack['error']);
     } on ApiException catch (e) {
+      if (epoch != _epoch) return false;
       out.error = e.status == 0 ? 'No connection — check your signal and try again.' : e.message;
+    } catch (_) {
+      if (epoch != _epoch) return false;
+      out.error = sendFailureText(null); // never a message stuck at the head of the line
     }
     sendError = out.error;
     _notify();
@@ -592,11 +1034,13 @@ class MessengerController extends ChangeNotifier {
     return e;
   }
 
-  /// The customer is typing (for the team's "typing…").
+  /// The customer is typing (for the team's "typing…"). Keeps [draft] too.
   void composerChanged(String text) {
+    draft = text;
     final id = liveId;
     final ch = _channel;
-    if (id == null || ch == null) return;
+    // Not while connecting: Socket.IO would hold it and say "typing" late.
+    if (id == null || ch == null || !connected) return;
     if (text.trim().isEmpty) {
       _stopVisitorTyping();
       return;
@@ -615,6 +1059,40 @@ class MessengerController extends ChangeNotifier {
     _visitorTyping = false;
     final id = liveId;
     if (id != null) _channel?.emit('typing:stop', <String, dynamic>{'conversationId': id});
+  }
+
+  /// The connection once it is up — waiting up to [timeout] for it — or null.
+  /// So a button tapped while it connects is sent then, rather than dropped,
+  /// or held by Socket.IO past the point the customer was told it failed.
+  Future<RealtimeChannel?> _whenConnected({Duration timeout = const Duration(seconds: 20)}) async {
+    if (connected && _channel != null) return _channel;
+    final epoch = _epoch;
+    final waiter = Completer<void>();
+    _linkWaiters.add(waiter);
+    try {
+      await waiter.future.timeout(timeout);
+    } on TimeoutException {
+      // not connected in time: the caller says so
+    } finally {
+      _linkWaiters.remove(waiter);
+    }
+    if (epoch != _epoch || _disposed || !connected) return null;
+    return _channel;
+  }
+
+  static const _notConnected = 'No connection — check your signal and try again.';
+
+  void _releaseWaiting() {
+    final jobs = List<_Send>.of(_queue);
+    _queue.clear();
+    for (final job in jobs) {
+      if (!job.done.isCompleted) job.done.complete(false);
+    }
+    final waiters = List<Completer<void>>.of(_linkWaiters);
+    _linkWaiters.clear();
+    for (final w in waiters) {
+      if (!w.isCompleted) w.complete();
+    }
   }
 
   // ---- workflows --------------------------------------------------------------
@@ -649,12 +1127,21 @@ class MessengerController extends ChangeNotifier {
   /// A button on the opening menu: the conversation starts here.
   Future<void> startWorkflow(FlowButton button) async {
     final p = preview;
-    final ch = _channel;
-    if (p == null || ch == null || flowBusy) return;
+    if (p == null || flowBusy) return;
+    final epoch = _epoch;
     flowBusy = true;
     flowNotice = null;
     _notify();
+    final ch = await _whenConnected();
+    if (epoch != _epoch) return;
+    if (ch == null) {
+      flowBusy = false;
+      flowNotice = _notConnected;
+      _notify();
+      return;
+    }
     final ack = await ch.request('workflow:start', <String, dynamic>{'workflowId': p.workflowId, 'buttonId': button.id});
+    if (epoch != _epoch) return;
     flowBusy = false;
     if (ack['ok'] == true) {
       liveId = (ack['conversationId'] as String?) ?? liveId;
@@ -663,11 +1150,11 @@ class MessengerController extends ChangeNotifier {
       switch (ack['error']) {
         case 'already_in_conversation':
           preview = null;
-          await _catchUp();
+          await refresh();
         case 'workflow_changed':
         case 'workflow_invalid':
         case 'unknown_button':
-          await _loadPreview();
+          await _loadPreview(epoch);
         default:
           flowNotice = flowFailed(ack['error']);
       }
@@ -677,13 +1164,22 @@ class MessengerController extends ChangeNotifier {
 
   /// A button under a bot question in the thread.
   Future<void> choose(ChatMessage prompt, FlowButton button) async {
-    final ch = _channel;
     final id = liveId;
-    if (ch == null || id == null || flowBusy) return;
+    if (id == null || flowBusy) return;
+    final epoch = _epoch;
     flowBusy = true;
     flowNotice = null;
     _notify();
+    final ch = await _whenConnected();
+    if (epoch != _epoch) return;
+    if (ch == null) {
+      flowBusy = false;
+      flowNotice = _notConnected;
+      _notify();
+      return;
+    }
     final ack = await ch.request('workflow:choose', <String, dynamic>{'conversationId': id, 'promptId': prompt.id, 'buttonId': button.id});
+    if (epoch != _epoch) return;
     flowBusy = false;
     if (ack['ok'] != true) {
       if (_settled.contains(ack['error'])) {
@@ -697,15 +1193,24 @@ class MessengerController extends ChangeNotifier {
 
   /// A detail the bot asked for (email, phone, …). True when it was taken.
   Future<bool> collect(ChatMessage prompt, String value) async {
-    final ch = _channel;
     final id = liveId;
     final v = value.trim();
-    if (ch == null || id == null || flowBusy || v.isEmpty) return false;
+    if (id == null || flowBusy || v.isEmpty) return false;
+    final epoch = _epoch;
     flowBusy = true;
     collectError = null;
     flowNotice = null;
     _notify();
+    final ch = await _whenConnected();
+    if (epoch != _epoch) return false;
+    if (ch == null) {
+      flowBusy = false;
+      collectError = _notConnected;
+      _notify();
+      return false;
+    }
     final ack = await ch.request('workflow:collect', <String, dynamic>{'conversationId': id, 'promptId': prompt.id, 'value': v});
+    if (epoch != _epoch) return false;
     flowBusy = false;
     var ok = ack['ok'] == true;
     if (!ok && _settled.contains(ack['error'])) {
@@ -727,6 +1232,7 @@ class MessengerController extends ChangeNotifier {
 
   /// A face tapped. Shown at once; taken back (with a reason) if it did not save.
   Future<void> rate(String ratingId, int rating) async {
+    final epoch = _epoch;
     final before = csat[ratingId];
     final first = before?.rating == null;
     final answer = before ?? CsatAnswer();
@@ -735,8 +1241,11 @@ class MessengerController extends ChangeNotifier {
       ..error = null;
     csat[ratingId] = answer;
     _notify();
-    final ack = await (_channel?.request('csat:rate', <String, dynamic>{'ratingId': ratingId, 'rating': rating}) ??
+    final ch = await _whenConnected();
+    if (epoch != _epoch) return;
+    final ack = await (ch?.request('csat:rate', <String, dynamic>{'ratingId': ratingId, 'rating': rating}) ??
         Future<Map<String, dynamic>>.value(<String, dynamic>{'ok': false, 'error': 'not_connected'}));
+    if (epoch != _epoch) return;
     if (ack['ok'] != true) {
       final error = ack['error'];
       if (error == 'expired' || error == 'not_found') {
@@ -753,12 +1262,16 @@ class MessengerController extends ChangeNotifier {
     final answer = csat[ratingId];
     final t = text.trim();
     if (answer?.rating == null || t.isEmpty) return;
+    final epoch = _epoch;
     answer!
       ..commentState = 'sending'
       ..error = null;
     _notify();
-    final ack = await (_channel?.request('csat:rate', <String, dynamic>{'ratingId': ratingId, 'rating': answer.rating, 'comment': t}) ??
+    final ch = await _whenConnected();
+    if (epoch != _epoch) return;
+    final ack = await (ch?.request('csat:rate', <String, dynamic>{'ratingId': ratingId, 'rating': answer.rating, 'comment': t}) ??
         Future<Map<String, dynamic>>.value(<String, dynamic>{'ok': false}));
+    if (epoch != _epoch) return;
     if (ack['ok'] == true) {
       answer
         ..commentState = 'sent'
@@ -779,11 +1292,13 @@ class MessengerController extends ChangeNotifier {
   Future<String?> leaveEmail(String email) async {
     final e = email.trim();
     if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(e)) return 'Enter a valid email address.';
+    final epoch = _epoch;
     try {
       await api.leaveEmail(e);
     } on ApiException catch (err) {
       return err.status == 0 ? 'No connection — try again.' : err.message;
     }
+    if (epoch != _epoch) return null;
     visitorEmail = e;
     emailSavedFor = e;
     _emailThanks?.cancel();
@@ -799,7 +1314,10 @@ class MessengerController extends ChangeNotifier {
 
   /// One of the customer's conversations, in full (the closed ones too).
   Future<ConversationDetail> loadConversation(String id) async {
+    final epoch = _epoch;
     final d = await api.conversation(id);
+    // Someone else signed in while it loaded: not theirs to see.
+    if (epoch != _epoch) throw const ApiException(401, 'Signed out');
     _seedCsat(d.csat);
     _zeroUnread(id);
     unawaited(api.seen(id).catchError((Object _) {}));
@@ -827,12 +1345,15 @@ class MessengerController extends ChangeNotifier {
   }
 
   Future<void> loadArticles() async {
+    final epoch = _epoch;
     try {
       final r = await api.articles();
+      if (epoch != _epoch) return;
       articles = r.articles;
       helpUrl = r.helpUrl;
     } catch (_) {
-      articles = <ArticleSummary>[];
+      if (epoch != _epoch) return;
+      if (!articlesLoaded) articles = <ArticleSummary>[]; // a failed refresh keeps the list from before
     }
     articlesLoaded = true;
     _notify();
@@ -868,18 +1389,67 @@ class MessengerController extends ChangeNotifier {
     }
   }
 
+  /// Tell the screens — at most once a frame for what happens between
+  /// frames. Each change used to redraw the whole messenger on its own; an
+  /// AI answer typing out, a burst of catch-up messages or a run of presence
+  /// updates now redraw it once per frame, however many changes came in it.
   void _notify() {
-    if (!_disposed) notifyListeners();
+    if (_disposed || !hasListeners) return;
+    SchedulerBinding? frames;
+    try {
+      frames = SchedulerBinding.instance;
+    } catch (_) {
+      frames = null; // no Flutter binding (a plain unit test): tell them now
+    }
+    if (frames == null) {
+      notifyListeners();
+      return;
+    }
+    switch (frames.schedulerPhase) {
+      case SchedulerPhase.idle:
+        // A socket event, a timer, a reply: everything until the next frame
+        // is one redraw.
+        if (_frameCallback != null) return;
+        _frameCallback = frames.scheduleFrameCallback((_) {
+          _frameCallback = null;
+          if (!_disposed) notifyListeners();
+        });
+      case SchedulerPhase.persistentCallbacks:
+        // Mid-build (a screen closing): once this frame is done, as the tree
+        // cannot be marked for another build while it is being built.
+        if (_afterFrame) return;
+        _afterFrame = true;
+        frames.addPostFrameCallback((_) {
+          _afterFrame = false;
+          if (!_disposed) notifyListeners();
+        });
+      case SchedulerPhase.transientCallbacks:
+      case SchedulerPhase.midFrameMicrotasks:
+      case SchedulerPhase.postFrameCallbacks:
+        notifyListeners(); // a build is still to come, or may be asked for
+    }
   }
 
   @override
   void dispose() {
     _disposed = true;
+    _epoch++; // whatever is still on its way (a load after a sign-out) lands nowhere
+    final pending = _frameCallback;
+    if (pending != null) {
+      try {
+        SchedulerBinding.instance.cancelFrameCallbackWithId(pending);
+      } catch (_) {
+        // no binding: nothing was scheduled with it
+      }
+      _frameCallback = null;
+    }
     _stopVisitorTyping();
     _closeChannel();
+    _idleTimer?.cancel();
     _agentTypingTimer?.cancel();
     _drip?.cancel();
     _emailThanks?.cancel();
+    _releaseWaiting();
     super.dispose();
   }
 }

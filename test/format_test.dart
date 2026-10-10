@@ -20,14 +20,15 @@ void main() {
 
   group('presence lines', () {
     const closed = OfficeHours(open: false, opensLabel: 'tomorrow at 9am', awayMessage: 'We are away right now.');
-    test('unknown reads as the neutral, positive line — never away', () {
+    test('unknown (connecting, reconnecting) reads as the neutral, positive line — never away, never "Active now"', () {
       final p = presenceLines(null, closed);
       expect(p.home, 'We typically reply in a few minutes');
-      expect(p.header, 'Active now');
+      expect(p.header, 'Typically replies in a few minutes');
       expect(p.away, isFalse);
     });
     test('someone online outranks the clock', () {
       expect(presenceLines(2, closed).home, "We're online — reply in a few minutes");
+      expect(presenceLines(2, closed).header, 'Active now');
     });
     test('nobody online: when we are back, or by email', () {
       expect(presenceLines(0, closed).home, "We're away — back tomorrow at 9am");
