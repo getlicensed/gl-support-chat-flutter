@@ -316,7 +316,10 @@ void main() {
       expect(contrast(tester.widget<Icon>(tick).color!, Colors.white), greaterThanOrEqualTo(4.5));
       final time = find.descendant(of: find.ancestor(of: tick, matching: find.byType(Row)).first, matching: find.byType(Text));
       expect(contrast(paragraphColor(tester, time), Colors.white), greaterThanOrEqualTo(4.5));
-      // The header's status line, on the brand colour (#1F6FEB here).
+      // The header's status line, on the brand colour (#1F6FEB here). The
+      // server says who is online as the connection comes up.
+      channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 1});
+      await tester.pump();
       final status = find.descendant(of: page(), matching: find.text('Active now'));
       expect(contrast(paragraphColor(tester, status), const Color(0xFF1F6FEB)), greaterThanOrEqualTo(4.5));
     });
@@ -563,7 +566,7 @@ void main() {
     final c = await openThread(tester, messages: thread(3));
     expect(c.link, LinkState.connecting);
     expect(find.descendant(of: page(), matching: find.text('Active now')), findsNothing);
-    expect(find.descendant(of: page(), matching: find.text('We typically reply in a few minutes')), findsOneWidget);
+    expect(find.descendant(of: page(), matching: find.text('Typically replies in a few minutes')), findsOneWidget);
     expect(find.text('Connecting…'), findsNothing, reason: 'not a flash on every open');
     await tester.pump(ConnectionBar.patience);
     await tester.pump();
@@ -579,13 +582,53 @@ void main() {
     expect(find.text('Hello while connecting'), findsOneWidget, reason: 'on screen: on its way, or sent');
     expect(tester.widget<EditableText>(find.descendant(of: composer(), matching: find.byType(EditableText))).controller.text, isEmpty);
 
+    expect(channel.requests.where((r) => r.$1 == 'visitor:message'), isEmpty, reason: 'held until connected');
+
     channel.server('connect', null);
+    await tester.pump();
+    expect(channel.requests.where((r) => r.$1 == 'visitor:message').map((r) => r.$2['body']), <Object?>['Hello while connecting'],
+        reason: 'sent once connected, once');
+    // Connected, and the server says who is online (as it does on connect).
+    channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 1});
     await tester.pump();
     expect(find.descendant(of: page(), matching: find.text('Active now')), findsOneWidget);
     expect(find.text('Connecting…'), findsNothing);
     channel.server('disconnect', 'transport close');
     await tester.pump();
     expect(find.text('Reconnecting…'), findsOneWidget, reason: 'a drop shows at once');
+    expect(find.descendant(of: page(), matching: find.text('Active now')), findsNothing, reason: 'nobody is known online while reconnecting');
+  });
+
+  testWidgets('what was typed and not sent is in the composer at the next open — and gone once someone else signs in', (tester) async {
+    usePhone(tester, Phone.iphone13);
+    server.openInfo = <String, dynamic>{'conversationId': 'conv-1', 'unreadCount': 0};
+    server.conversations = <Map<String, dynamic>>[row('conv-1')];
+    server.details['conv-1'] = detail('conv-1', thread(3));
+    // One controller across opens, as GLSupportChat keeps it for the same customer.
+    final c = controllerFor(server, channel);
+    String typed() => tester.widget<EditableText>(find.descendant(of: composer(), matching: find.byType(EditableText))).controller.text;
+    Future<void> open() async {
+      await tester.pumpWidget(MaterialApp(home: GLSupportChatPage(controller: c, screen: GLSupportChatScreen.conversation('conv-1'))));
+      await settle(tester);
+    }
+
+    await open();
+    expect(typed(), isEmpty);
+    await tester.enterText(composer(), 'My licence number is');
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox()); // closed
+
+    await open();
+    expect(typed(), 'My licence number is');
+    expect(tester.widget<InkWell>(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: find.byType(InkWell)).first).onTap, isNotNull,
+        reason: 'Send is ready for it');
+    await tester.pumpWidget(const SizedBox());
+
+    c.reset(); // a sign-out, or someone else signing in
+    await open();
+    expect(typed(), isEmpty, reason: 'never the customer before');
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
   });
 
   testWidgets('every phone, with and without the keyboard, at 1.0, 1.3 and 2.0, in a dark app: nothing overflows, the composer sits above the keyboard', (tester) async {

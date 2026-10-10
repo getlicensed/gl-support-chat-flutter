@@ -567,11 +567,10 @@ class _Header extends StatelessWidget {
     final c = context.messenger;
     final brand = c.brand;
     final s = c.session;
+    // The controller knows of nobody online while it connects or reconnects
+    // (agentsOnline is null then), so the line says "Active now" only once
+    // the connection is up and the server has said someone is.
     final status = presenceLines(c.agentsOnline, s?.officeHours);
-    // "Active now" and the green dot only once the connection is up: while
-    // connecting or reconnecting nobody can see the customer typing yet.
-    final linked = c.link == LinkState.connected;
-    final line = linked || status.away ? status.header : status.home;
     final hasTeam = (s?.team ?? const []).isNotEmpty;
     return Container(
       decoration: BoxDecoration(
@@ -608,13 +607,14 @@ class _Header extends StatelessWidget {
                           Container(
                             width: 6,
                             height: 6,
-                            decoration: BoxDecoration(color: status.away || !linked ? Palette.away : const Color(0xFF4ADE80), shape: BoxShape.circle),
+                            // Green only while connected: before, nobody sees the customer typing.
+                            decoration: BoxDecoration(color: status.away || !c.connected ? Palette.away : const Color(0xFF4ADE80), shape: BoxShape.circle),
                           ),
                           const SizedBox(width: 5),
                         ],
                         Flexible(
                           child: Text(
-                            live ? line : 'Conversation history',
+                            live ? status.header : 'Conversation history',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             // Full strength: faded, it fell under 4.5:1 on most brand colours.
@@ -1742,6 +1742,15 @@ class _Composer extends StatefulWidget {
 
 class _ComposerState extends State<_Composer> {
   final _text = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // What the customer typed and did not send before closing the messenger
+    // is there again. The controller keeps it only for them: a sign-out, or
+    // someone else signing in, empties it.
+    _text.text = context.getInheritedWidgetOfExactType<MessengerScope>()?.controller.draft ?? '';
+  }
 
   @override
   void dispose() {
