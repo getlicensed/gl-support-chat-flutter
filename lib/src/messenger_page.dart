@@ -198,11 +198,15 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
     if (screen == GLSupportChatScreen.messages || screen.conversationId != null) unawaited(c.refresh());
   }
 
-  /// Back to the tabs: close whatever the customer had opened over them.
+  /// Back to the tabs: close the messenger's own screens the customer had
+  /// opened over them. Never one of the app's: a lock or sign-in screen the
+  /// app put over the messenger stays, and nothing under it is popped (a
+  /// push tapped then is dropped; the conversation screens of a customer
+  /// signed out remove themselves from under it).
   void _closeScreensAbove() {
     final route = _route;
     if (route == null || !route.isActive || route.isCurrent) return;
-    Navigator.of(context).popUntil((r) => r == route);
+    Navigator.of(context).popUntil((r) => r == route || !(r.settings.name ?? '').startsWith('$messengerRoutePrefix/'));
   }
 
   void _scheduleOpen(MessengerController c) {

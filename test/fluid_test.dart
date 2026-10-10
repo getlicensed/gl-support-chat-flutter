@@ -7,6 +7,7 @@ import 'package:gl_support_chat/src/core/controller.dart';
 import 'package:gl_support_chat/src/core/format.dart';
 import 'package:gl_support_chat/src/core/session_store.dart';
 import 'package:gl_support_chat/src/messenger_page.dart';
+import 'package:gl_support_chat/src/ui/conversation.dart';
 
 import 'support/fakes.dart';
 import 'support/gated.dart';
@@ -121,10 +122,16 @@ void main() {
       server.release(<String>['/widget/conversations']);
       await pumpEventQueue();
       expect(c.conversationsLoaded, isTrue, reason: 'each lands as it comes');
-      expect(c.phase, MessengerPhase.loading, reason: 'the first open waits for the open conversation too');
+      expect(c.phase, MessengerPhase.ready, reason: 'Home shows once the list is in, a round trip sooner');
+      expect(c.liveLoaded, isFalse, reason: 'the open conversation comes in behind it');
+      expect(c.refreshing, isTrue, reason: 'what a push waits on');
+      expect(c.composerLock, isNotNull, reason: 'no composer before the workflow is known');
       server.release();
       await starting;
       expect(c.phase, MessengerPhase.ready);
+      expect(c.liveLoaded, isTrue);
+      expect(c.refreshing, isFalse);
+      expect(c.composerLock, isNull);
       expect(c.live.length, 2);
       c.dispose();
     });
@@ -299,6 +306,105 @@ void main() {
     });
   });
 
+  group('steady on a phone network', () {
+    test('the away form stays through a drop and a reopen, until the count changes; never the customer before\'s', () async {
+      final channel = ManualChannel(autoConnect: true);
+      final c = controllerOn(server, channel);
+      c.attach();
+      await c.start();
+      channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 0});
+      expect(c.showEmailBar, isTrue);
+
+      channel.drop();
+      expect(c.agentsOnline, isNull, reason: 'nobody is known online while reconnecting: the header waits');
+      expect(c.showEmailBar, isTrue, reason: 'the form stays put, so the thread does not jump');
+      channel.open();
+      c.detach(); // closed: the connection goes
+      c.attach(); // and opened again, before the server says the count
+      expect(c.agentsOnline, isNull);
+      expect(c.showEmailBar, isTrue, reason: 'there from the first frame of the reopen');
+      await pumpEventQueue();
+
+      channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 1});
+      expect(c.showEmailBar, isFalse, reason: 'someone came online');
+      channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 0});
+      c.reset();
+      expect(c.showEmailBar, isFalse);
+      c.dispose();
+    });
+
+    test('no answer in time, but the server had it: the failed bubble goes when the catch-up brings it, and nothing is sent twice', () async {
+      final channel = ManualChannel(autoConnect: true);
+      channel.answers['visitor:message'] = (_) => <String, dynamic>{'ok': false, 'error': 'timeout'};
+      final c = controllerOn(server, channel);
+      await c.start();
+
+      expect(await c.send('Is my card ready?'), isFalse);
+      expect(c.outgoing.single.failed, isTrue);
+      // An older message with the same words is not it.
+      channel.server('message:created', msg('old', 'visitor', 'Is my card ready?', at: '2026-01-05T09:00:00.000Z'));
+      expect(c.outgoing, hasLength(1));
+
+      server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
+        msg('m1', 'visitor', 'Where is my certificate?'),
+        msg('m2', 'agent', 'It is in the post today.'),
+        msg('m3', 'visitor', 'Is my card ready?', at: DateTime.now().toUtc().toIso8601String()),
+      ]);
+      channel
+        ..drop()
+        ..open(); // the catch-up after the reconnect
+      await pumpEventQueue();
+      expect(c.outgoing, isEmpty, reason: 'no failed copy beside the real one, and no Try again to send it twice');
+      expect(c.sendError, isNull);
+      expect(channel.sent, <String>['Is my card ready?']);
+      c.dispose();
+    });
+
+    test('no answer in time, but its copy came while waiting: it counts as sent', () async {
+      final channel = ManualChannel(autoConnect: true);
+      channel.answers['visitor:message'] = (_) => <String, dynamic>{'ok': false, 'error': 'timeout'};
+      final c = controllerOn(server, channel);
+      await c.start();
+      final answer = channel.holdAcks = Completer<void>();
+      final sending = c.send('Is my card ready?');
+      await pumpEventQueue();
+      channel.server('message:created', msg('m3', 'visitor', 'Is my card ready?', at: DateTime.now().toUtc().toIso8601String()));
+      answer.complete();
+      expect(await sending, isTrue);
+      expect(c.outgoing, isEmpty);
+      expect(c.live.where((m) => m.body == 'Is my card ready?'), hasLength(1));
+      c.dispose();
+    });
+
+    test('closed, it keeps in memory only the photos the open conversation shows', () async {
+      const shown = '11111111-2222-3333-4444-000000000001';
+      const older = '11111111-2222-3333-4444-000000000002';
+      server.files[shown] = _png;
+      server.files[older] = _png;
+      server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
+        msg('m1', 'visitor', '[Photo]', attachments: <Object?>[
+          <String, dynamic>{'name': 'licence.jpg', 'url': 'upload://$shown', 'contentType': 'image/jpeg'},
+        ]),
+        msg('m2', 'agent', 'Thanks, that is clear.'),
+      ]);
+      int fetched(String id) => count('GET /widget/files/$id');
+      final c = controllerOn(server, ManualChannel(autoConnect: true));
+      c.attach();
+      await c.start();
+      await c.fileBytes(shown);
+      await c.fileBytes(older); // a photo in an older conversation
+      await c.fileBytes(older);
+      expect(fetched(older), 1, reason: 'once while it is open');
+
+      c.detach();
+      await c.fileBytes(shown);
+      expect(fetched(shown), 1, reason: "the open conversation's photo stays, to draw at once next time");
+      await c.fileBytes(older);
+      expect(fetched(older), 2, reason: 'the rest left memory when it closed');
+      c.dispose();
+    });
+  });
+
   group('the app goes and comes back', () {
     test('in the background nothing is marked seen; back, it reconnects and catches up once, without duplicates', () async {
       final channel = ManualChannel(autoConnect: true);
@@ -393,6 +499,7 @@ void main() {
   group('GLSupportChat', () {
     late ManualChannel channel;
     const ayesha = GLSupportChatIdentity(id: 'A', name: 'Ayesha Khan', hash: 'ha');
+    const bilal = GLSupportChatIdentity(id: 'B', name: 'Bilal Ahmed', hash: 'hb');
 
     setUp(() async {
       GLSupportChat.debugReset();
@@ -434,7 +541,7 @@ void main() {
       expect(GLSupportChat.debugMessenger, same(kept), reason: 'kept for the next open');
 
       // Opened again with the server slow to answer: what it had, at once.
-      server.hold(GatedServer.opening);
+      server.hold(<String>[...GatedServer.opening, '/api/help/articles']);
       final answered = server.finished.length;
       unawaited(GLSupportChat.present(host));
       await tester.pump();
@@ -606,6 +713,194 @@ void main() {
       await close(tester, host);
     });
 
+    testWidgets('login, then present: Home once the sign-in and the list are in, signed in once; the conversation follows behind a spinner', (tester) async {
+      final host = await app(tester);
+      expect(await GLSupportChat.login(ayesha), isTrue);
+      final auths = count('POST /widget/auth');
+      server.hold(<String>['/widget/messages', '/widget/conversations/conv-1', '/widget/workflow']);
+      unawaited(GLSupportChat.present(host));
+      await settle(tester);
+      expect(find.text('Hi Ayesha 👋'), findsOneWidget, reason: 'Home, without waiting for the open conversation');
+      expect(find.text('It is in the post today.'), findsOneWidget, reason: 'the recent message, from the list');
+      expect(count('POST /widget/auth'), auths, reason: 'the sign-in login() just made, not a second one');
+
+      await tester.tap(find.text('Send us a message'));
+      await settle(tester);
+      final page = find.byType(ConversationPage);
+      expect(find.descendant(of: page, matching: find.byType(CircularProgressIndicator)), findsOneWidget);
+      expect(find.text('How do I renew my licence?'), findsNothing, reason: 'no opening chips before the thread is known');
+      expect(find.descendant(of: page, matching: find.byType(TextField)), findsNothing, reason: 'no composer before the workflow is known');
+
+      server.release();
+      await settle(tester);
+      expect(find.text('Where is my certificate?'), findsOneWidget);
+      expect(find.descendant(of: page, matching: find.byType(CircularProgressIndicator)), findsNothing);
+      expect(find.descendant(of: page, matching: find.byType(TextField)), findsOneWidget);
+      await close(tester, host);
+
+      // A reopen within the minute still asks the server: what it knows may
+      // have changed since (here, an email left in the away form).
+      server.session = <String, dynamic>{...server.session, 'email': 'ayesha@example.com'};
+      unawaited(GLSupportChat.present(host));
+      await settle(tester);
+      expect(count('POST /widget/auth'), auths + 1);
+      expect(GLSupportChat.debugMessenger!.visitorEmail, 'ayesha@example.com');
+      await close(tester, host);
+    });
+
+    testWidgets('someone else signs in while the first customer reads the open conversation: nothing of theirs is marked read', (tester) async {
+      final host = await app(tester);
+      await GLSupportChat.login(ayesha);
+      unawaited(GLSupportChat.present(host));
+      await settle(tester);
+      await tester.tap(find.text('Send us a message'));
+      await settle(tester);
+      expect(GLSupportChat.debugMessenger!.viewingLive, isTrue);
+
+      // Bilal's account: two replies he has not read.
+      server.openInfo = <String, dynamic>{'conversationId': 'conv-B', 'unreadCount': 2};
+      server.conversations = <Map<String, dynamic>>[row('conv-B', unread: 2, body: 'Your card is ready.')];
+      server.details['conv-B'] = detail('conv-B', <Map<String, dynamic>>[
+        msg('b1', 'visitor', 'Is my card ready?', conversationId: 'conv-B'),
+        msg('b2', 'agent', 'Checking now.', conversationId: 'conv-B'),
+        msg('b3', 'agent', 'Your card is ready.', conversationId: 'conv-B'),
+      ]);
+      final seen = count('POST /widget/seen');
+      // His loads land while her conversation screen is still on its way out.
+      await GLSupportChat.login(bilal);
+      await settle(tester);
+      final c = GLSupportChat.debugMessenger!;
+      expect(count('POST /widget/seen'), seen, reason: 'he has not opened it: the team must not see "Seen"');
+      expect(c.totalUnread, 2, reason: 'his badge');
+      expect(c.viewingLive, isFalse);
+      expect(c.dividerIndex, 1, reason: '"New messages" above his two replies, for when he opens it');
+      expect(find.text('Where is my certificate?', skipOffstage: false), findsNothing);
+      await close(tester, host);
+    });
+
+    testWidgets("the app's own screen over the messenger stays: a push tapped under it, a sign-out under it", (tester) async {
+      final host = await app(tester);
+      await GLSupportChat.login(ayesha);
+      unawaited(GLSupportChat.present(host));
+      await settle(tester);
+      final nav = Navigator.of(host, rootNavigator: true);
+      Future<void> appScreen(String name, String text) async {
+        unawaited(nav.push(MaterialPageRoute<void>(settings: RouteSettings(name: name), builder: (_) => Scaffold(body: Text(text)))));
+        await settle(tester);
+      }
+
+      // The app locks itself on resume, then a support push is tapped.
+      await appScreen('/lock', 'Enter your PIN');
+      unawaited(GLSupportChat.present(host, screen: GLSupportChatScreen.fromPush(<String, dynamic>{'type': 'message', 'conversationId': 'conv-1'})!));
+      await settle(tester);
+      expect(find.text('Enter your PIN'), findsOneWidget, reason: 'the chat never shows past the lock screen');
+      expect(find.byType(ConversationPage, skipOffstage: false), findsNothing);
+      nav.pop();
+      await settle(tester);
+
+      // The app asks the customer to sign in again, and signs them out.
+      await appScreen('/sign-in', 'Sign in again');
+      await GLSupportChat.logout();
+      await settle(tester);
+      expect(find.text('Sign in again'), findsOneWidget, reason: "a sign-out never pops the app's own screen");
+      nav.pop();
+      await settle(tester);
+      await close(tester, host);
+    });
+
+    testWidgets("the first customer's screens under the app's sign-in screen go with them: an old conversation, a photo open full screen", (tester) async {
+      const photo = '11111111-2222-3333-4444-000000000001';
+      server.files[photo] = _png;
+      server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
+        msg('m1', 'visitor', '[Photo]', attachments: <Object?>[
+          <String, dynamic>{'name': 'licence.jpg', 'url': 'upload://$photo', 'contentType': 'image/jpeg'},
+        ]),
+        msg('m2', 'agent', 'It is in the post today.'),
+      ]);
+      server.conversations = <Map<String, dynamic>>[
+        row('conv-1', body: 'It is in the post today.'),
+        row('old', open: false, body: 'Your refund has gone through.', at: '2026-09-21T10:00:00.000Z'),
+      ];
+      server.details['old'] = detail('old', <Map<String, dynamic>>[
+        msg('a', 'visitor', 'Can I have a refund?', conversationId: 'old'),
+        msg('b', 'agent', 'Your refund has gone through.', conversationId: 'old'),
+      ], open: false);
+      final host = await app(tester);
+      final nav = Navigator.of(host, rootNavigator: true);
+      Future<void> signInScreen() async {
+        unawaited(nav.push(MaterialPageRoute<void>(settings: const RouteSettings(name: '/sign-in'), builder: (_) => const Scaffold(body: Text('Sign in again')))));
+        await settle(tester);
+      }
+
+      Future<void> switchCustomer() async {
+        server.conversations = <Map<String, dynamic>>[];
+        server.openInfo = <String, dynamic>{'conversationId': null, 'unreadCount': 0};
+        await GLSupportChat.logout();
+        await GLSupportChat.login(bilal);
+        await settle(tester);
+        expect(find.text('Sign in again'), findsOneWidget);
+        nav.pop(); // the app, once signed in
+        await settle(tester);
+      }
+
+      await GLSupportChat.login(ayesha);
+      unawaited(GLSupportChat.present(host));
+      await settle(tester);
+      await tester.tap(find.text('Messages'));
+      await settle(tester);
+      await tester.tap(find.text('Your refund has gone through.'));
+      await settle(tester);
+      expect(find.text('Can I have a refund?'), findsOneWidget);
+      await signInScreen();
+      await switchCustomer();
+      expect(find.text('Can I have a refund?', skipOffstage: false), findsNothing, reason: "never Ayesha's, for Bilal");
+      expect(find.byType(GLSupportChatPage), findsOneWidget, reason: 'the messenger, now his');
+      await close(tester, host);
+
+      server.conversations = <Map<String, dynamic>>[row('conv-1', body: 'It is in the post today.')];
+      server.openInfo = <String, dynamic>{'conversationId': 'conv-1', 'unreadCount': 0};
+      await GLSupportChat.login(ayesha);
+      unawaited(GLSupportChat.present(host));
+      await settle(tester);
+      await tester.tap(find.text('Send us a message'));
+      await settle(tester);
+      final image = find.byWidgetPredicate((w) => w is Image && w.image is MemoryImage);
+      expect(image, findsOneWidget);
+      tester.widget<GestureDetector>(find.ancestor(of: image, matching: find.byType(GestureDetector)).first).onTap!();
+      await settle(tester);
+      expect(find.byType(InteractiveViewer), findsOneWidget, reason: 'her photo, full screen');
+      await signInScreen();
+      await switchCustomer();
+      expect(find.byType(InteractiveViewer, skipOffstage: false), findsNothing, reason: 'her photo went with her');
+      expect(find.byType(ConversationPage, skipOffstage: false), findsNothing);
+      await close(tester, host);
+    });
+
+    testWidgets('a photo open full screen goes with a sign-out', (tester) async {
+      const photo = '11111111-2222-3333-4444-000000000001';
+      server.files[photo] = _png;
+      server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
+        msg('m1', 'visitor', '[Photo]', attachments: <Object?>[
+          <String, dynamic>{'name': 'licence.jpg', 'url': 'upload://$photo', 'contentType': 'image/jpeg'},
+        ]),
+      ]);
+      final host = await app(tester);
+      await GLSupportChat.login(ayesha);
+      unawaited(GLSupportChat.present(host));
+      await settle(tester);
+      await tester.tap(find.text('Send us a message'));
+      await settle(tester);
+      final image = find.byWidgetPredicate((w) => w is Image && w.image is MemoryImage);
+      tester.widget<GestureDetector>(find.ancestor(of: image, matching: find.byType(GestureDetector)).first).onTap!();
+      await settle(tester);
+      expect(find.byType(InteractiveViewer), findsOneWidget);
+      await GLSupportChat.logout();
+      await settle(tester);
+      expect(find.byType(InteractiveViewer, skipOffstage: false), findsNothing);
+      expect(find.byType(GLSupportChatPage), findsOneWidget, reason: 'the messenger stays, for whoever is next');
+      await close(tester, host);
+    });
+
     testWidgets("the app's lifecycle reaches the open messenger: nothing read in the background, all of it on return", (tester) async {
       final host = await app(tester);
       await GLSupportChat.login(ayesha);
@@ -676,3 +971,12 @@ void main() {
     c.dispose();
   });
 }
+
+/// A 1 × 1 PNG.
+const _png = <int>[
+  0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, //
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+  0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+  0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+  0x42, 0x60, 0x82,
+];

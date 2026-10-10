@@ -38,6 +38,9 @@ class FakeServer {
   int authStatus = 200;
   int uploads = 0;
 
+  /// The customer's files by upload id, as `/widget/files/:id` serves them.
+  final Map<String, List<int>> files = <String, List<int>>{};
+
   Iterable<String> get paths => requests.map((r) => '${r.method} ${r.url.path}');
 
   http.Client client() => MockClient((req) async {
@@ -55,6 +58,10 @@ class FakeServer {
           return d == null ? json(<String, dynamic>{'error': 'not_found'}, 404) : json(d);
         }
         if (path == '/widget/workflow') return json(<String, dynamic>{'workflow': workflow});
+        if (path.startsWith('/widget/files/')) {
+          final bytes = files[path.split('/').last];
+          return bytes == null ? json(<String, dynamic>{'error': 'not_found'}, 404) : http.Response.bytes(bytes, 200);
+        }
         if (path == '/widget/seen') return json(<String, dynamic>{'ok': true});
         if (path == '/widget/email') return json(<String, dynamic>{'ok': true});
         if (path == '/widget/unread') return json(<String, dynamic>{'unreadCount': 0});

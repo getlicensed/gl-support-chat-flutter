@@ -2,7 +2,7 @@
 
 A Flutter SDK for the GL Support Chat messenger: a native Home, Messages, Help and conversation, like Intercom's SDK, talking to the same API as the website messenger. One package, one chatbot per app. Each app's branding (colour, logo, the team faces it shows), articles and suggested questions are set in the GL Support Chat dashboard (Chatbots → the chatbot → Design) and change without a new app build.
 
-> **Built and tested, not yet run on a phone.** `flutter analyze` is clean and the unit, widget and live tests pass (the live test against a real API and Socket.IO server). Send any error from the first build back as it is.
+> **0.4.4 is in the four apps; 0.4.5 is built and tested, not yet run on a phone.** `flutter analyze` is clean and the unit and widget tests pass. The widget tests draw the screens at iPhone 13, iPhone SE, Android 360 and landscape sizes, with the keyboard up and down, the safe areas, text sizes up to 2.0 and a dark app theme. The live test runs against a real API and Socket.IO server (see "Working on the package"). Send any error from the first build back as it is.
 
 ## 0. Requirements
 
@@ -23,7 +23,7 @@ dependencies:
   gl_support_chat:
     git:
       url: https://github.com/getlicensed/gl-support-chat-flutter.git
-      ref: v0.4.4
+      ref: v0.4.5
 ```
 
 Pin a tag (`ref`) so a build only changes when you move it. The versions and what changed in each are in [`CHANGELOG.md`](CHANGELOG.md).
@@ -73,6 +73,7 @@ GLSupportChat.unreadCount.listen((n) => setState(() => unread = n));
 // Open
 GLSupportChat.present(context);                                       // Home
 GLSupportChat.present(context, screen: GLSupportChatScreen.messages); // the list, or straight into the open conversation if it has unread replies
+GLSupportChat.present(context, screen: GLSupportChatScreen.conversation(id)); // one conversation: the open one to reply in, a closed one to read
 GLSupportChat.presentHelp(context);
 GLSupportChat.presentArticle(context, 'how-do-i-reset-my-password');
 
@@ -81,6 +82,8 @@ await GLSupportChat.logout();
 ```
 
 **Android and iOS:** use the same `productId` on both (one chatbot per app, so a customer's conversations are the same whichever phone they use) and each platform's own `appId`. `appId` is optional: it labels the device and the push token for the team (the conversation's device chip says which app build wrote), and nothing depends on it.
+
+**Opening it again is instant.** The messenger keeps what it showed for as long as the same customer is signed in: opened again, it shows that at once and refreshes behind it. The first open after the app starts shows Home once the sign-in and the Messages list are in, sooner still within a minute of `login`, whose sign-in it reuses. A `logout`, or a `login` as someone else, drops all of it at once.
 
 **Offer support before sign-in too.** "I can't log in" is one of the most common reasons to contact support, and those customers have no identity yet. `present` without `login` opens the messenger anonymously. An anonymous chat is kept on the phone (per chatbot) and becomes the customer's own history when they sign in with a signed identity.
 
@@ -162,8 +165,9 @@ What GL Support Chat does with the extra keys:
 |---|---|
 | Home | The chatbot's logo, the team faces the admin chose (Design → Team faces: automatic, chosen, or nobody), a greeting ("Hi Ayesha 👋" when signed in), **Send us a message** with the team's status (online · back tomorrow at 9am · we'll reply by email), the **recent message**, help search and the top five articles |
 | Messages | Every conversation with this app's chatbot, newest first: preview, who, when, unread dot, "Closed". **Send us a message** at the bottom |
-| Conversation | The header shows the team faces, or the chatbot's logo when none are shown. The team's replies with their name and photo, the workflow's messages beside the chatbot's logo, photos and files the team sends, AI answers (typed out as they stream), the workflow's buttons and questions, CSAT faces after a close, ✓ / ✓✓, "New messages", typing dots both ways. The composer takes text and photos (library or camera); **while the workflow waits on a button or a detail it asked for there is no composer at all**, as in Intercom, and it comes back when typing is allowed. While nobody is online and the customer has no email on record: "Your email for follow-up". A closed conversation reads in full, with **Send us a message** instead of a composer |
+| Conversation | The header shows the team faces, or the chatbot's logo when none are shown. The latest message stays in view; reading further up, the customer keeps their place and a **New message** pill takes them down. A drag of the thread or a tap outside the box puts the keyboard away. The team's replies with their name and photo, the workflow's messages beside the chatbot's logo, photos and files the team sends, AI answers (typed out as they stream), the workflow's buttons and questions, CSAT faces after a close, ✓ / ✓✓, "New messages", typing dots both ways. The composer takes text and photos (library or camera); **while the workflow waits on a button or a detail it asked for there is no composer at all**, as in Intercom, and it comes back when typing is allowed. While nobody is online and the customer has no email on record: "Your email for follow-up". A closed conversation reads in full, with **Send us a message** instead of a composer |
 | Help | Search (instant, then full text from the server) and the articles, drawn natively; links open in the browser |
+| Everywhere | In an app that follows the phone's dark mode, typed text, hints and the help search stay dark on white; Android back steps back a screen at a time, then to the tab it opened on, then out; on an iPhone a swipe from the left edge steps back; buttons, chips and files take taps on at least 44 points |
 
 ## 4. When something goes wrong
 
@@ -173,15 +177,17 @@ Nothing here leaves a customer on a blank screen, an error page, or a dead butto
 |---|---|
 | No signal, the server down, a 5xx | **"We can't open the chat right now"** with *Try again*, *Open in browser*, and Email / WhatsApp / Call / Help centre from `fallback`. Sign-in retries a 429/502/503/504 or a dropped connection twice by itself first |
 | `configure()` never called | The same screen, not a crash |
-| The connection drops mid-conversation | A yellow "Reconnecting…" bar; sending waits. On reconnect, anything that arrived meanwhile is fetched |
+| The connection drops mid-conversation | A yellow "Reconnecting…" bar. Send still works: messages wait, show "Sending…", and go once, in order, when it is back. On reconnect, anything that arrived meanwhile is fetched |
+| The answer to a message is lost (a drop, or the phone locked, just after sending) | "No answer from the server" with **Try again**; if the message did reach the team, the catch-up shows it once, as sent, and the failed copy goes |
+| The app goes to the background and comes back | Nothing is marked read while it is away; back, it reconnects and fetches what came meanwhile |
 | The visitor token (24 h) runs out while the app is open | Renewed by itself; the customer sees nothing |
 | The server refuses a message (sending too fast, too long) | The bubble stays, greyed, with the reason in words and **Try again** / **Delete** |
 | A photo is too large or not a photo | The reason, under the bubble (the phone resizes photos first, so this is rare) |
 | The backend's identity signature is refused | The messenger opens anonymously; `identity_rejected` in diagnostics |
 | A link (WhatsApp, the help centre, mail, phone) | Opens in WhatsApp / the browser / the mail or phone app; WhatsApp not installed → wa.me in the browser |
-| Before anything has loaded | A spinner, "Connecting to support…", and a close button |
+| Before anything has loaded (the first open after the app starts) | A spinner, "Connecting to support…", and a close button, until the sign-in and the Messages list are in. A conversation opened before its messages are in shows a spinner, without a composer, until they are. Opened again later, what it had shows at once |
 
-`onDiagnostic` events: `messenger_ready {ms}`, `messenger_failed {reason, detail}`, `auth_failed {status, detail, failures}` (badge and push calls), `identity_rejected {code}`.
+`onDiagnostic` events: `messenger_ready {ms, cached}`, `messenger_failed {reason, detail}`, `auth_failed {status, detail, failures}` (badge and push calls), `identity_rejected {code}`.
 
 ## 5. Push: "an agent replied" on the lock screen
 
@@ -191,11 +197,14 @@ final token = await FirebaseMessaging.instance.getToken();
 if (token != null) await GLSupportChat.registerPushToken(token, platform: Platform.isIOS ? 'ios' : 'android');
 FirebaseMessaging.instance.onTokenRefresh.listen((t) => GLSupportChat.registerPushToken(t, platform: Platform.isIOS ? 'ios' : 'android'));
 
-// tap → the conversation
+// tap → the conversation the push is about (null: not a GL Support Chat push)
 FirebaseMessaging.onMessageOpenedApp.listen((m) {
-  if (m.data['type'] == 'message') GLSupportChat.present(navigatorKey.currentContext!, screen: GLSupportChatScreen.messages);
+  final screen = GLSupportChatScreen.fromPush(m.data);
+  if (screen != null) GLSupportChat.present(navigatorKey.currentContext!, screen: screen);
 });
 ```
+
+`fromPush` opens the conversation the push names (its `conversationId`), or the Messages list when it names none. An app that still passes `GLSupportChatScreen.messages` gets the conversation with the unread reply, once the messenger has checked. Tapped while the messenger is open, the push goes to its conversation in the messenger already up. The messenger never closes the app's own screens: if the app has put a lock or sign-in screen over it, that screen stays and the push only switches the messenger behind it to Messages.
 
 Push reaches **identified** users only (`registerPushToken` waits for `login`). Notifications collapse per conversation; the token is detached on `logout()`. Pushes are sent for agent replies, AI answers and hand-over lines in messenger conversations; email and WhatsApp conversations never push. The messenger plays no sound of its own: the push is the alert. Use the FCM token on iOS too, not the raw APNs token. The server side (a Firebase project with your APNs key, and its service account on the server) is set up on the GL Support Chat server.
 
@@ -230,7 +239,12 @@ At least one iPhone and one Android phone.
 - ▢ "Open WhatsApp" chip: WhatsApp with the message filled in; uninstalled, wa.me in the browser.
 - ▢ An article, its links go to the browser; back returns to the article.
 - ▢ Close: the X on every screen, and Android back, each close what they should.
-- ▢ Push: an agent replies while the app is in the background, a notification arrives, and tapping it opens the conversation.
+- ▢ Push: an agent replies while the app is in the background, a notification arrives, and tapping it opens the conversation. Tapped with the messenger already open, it goes to that conversation in it.
+- ▢ Close support and open it again: what it showed is there at once, with no spinner. Sign out and in as someone else: nothing of the first customer.
+- ▢ In a conversation, with the keyboard up: a drag on the thread, or a tap on it, puts the keyboard away; Send keeps it up. Your message scrolls into view. Scroll up, have an agent reply: you stay where you were and a **New message** pill takes you down.
+- ▢ Airplane mode in a conversation, send a message: it shows "Sending…"; network back, it goes once.
+- ▢ The phone in dark mode: typed text and hints are dark on white.
+- ▢ Android back: a screen at a time, then to the tab support opened on, then out of support. iPhone: a swipe from the left edge steps back.
 - ▢ Badge: an agent replies while the messenger is closed, and the badge goes up within 30 s.
 - ▢ Kill and reopen the app, open support: the same conversation is still there (also signed out).
 - ▢ `onDiagnostic` lines appear in the app's logs (`messenger_ready {ms: …}`).
@@ -240,7 +254,6 @@ At least one iPhone and one Android phone.
 - Sending a PDF or other file from the phone (the server takes PDFs; the app's picker is photos only).
 - A sound in the open messenger (the push notification is the alert).
 - Replying in a closed conversation: it reads in full, and **Send us a message** continues the open one or starts a new one, one open conversation per customer, as on the website.
-- Queueing messages typed while offline (sending waits for the connection).
 
 ## Working on the package
 
@@ -249,6 +262,7 @@ flutter pub get && flutter analyze && flutter test
 ```
 
 - `test/controller_test.dart` and `test/widgets_test.dart` run against a pretend server and socket (`test/support/fakes.dart`).
+- `test/fluid_test.dart` (opening, sending while connecting, the app going and coming back, push, sign-out) and `test/mobile_ui_test.dart` (the screens at phone sizes with the keyboard, the safe areas, large text and a dark app theme; `test/support/phone.dart`) cover 0.4.5.
 - `test/attributes_test.dart` covers what `login` puts in the sign-in body, signed and unverified, against a pretend server.
 - `GL_SCREENSHOTS=1 flutter test test/screenshots_test.dart` renders the main screens to `test/screens/*.png` (gitignored) with real fonts, a look at a change without a phone.
 - `test/live_test.dart` runs against a real API and Socket.IO server, started from the GL Support Chat server repository: `pnpm messenger:live` there prints `GL_LIVE_API=… GL_LIVE_PRODUCT=…`; set both and run `flutter test test/live_test.dart`. Without them it is skipped.

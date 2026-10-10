@@ -198,7 +198,9 @@ class HomeTab extends StatelessWidget {
                             const SizedBox(height: 3),
                             Row(
                               children: [
-                                StatusDot(away: status.away, size: 7),
+                                // Green only while connected, as in the chat header:
+                                // before, nobody's presence is known.
+                                StatusDot(away: status.away || !c.connected, size: 7),
                                 const SizedBox(width: 6),
                                 Flexible(child: Text(status.home, style: const TextStyle(fontSize: 14, color: Palette.muted))),
                               ],

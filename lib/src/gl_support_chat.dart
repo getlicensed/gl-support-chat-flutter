@@ -20,7 +20,7 @@ import 'ui/common.dart';
 /// a complaint you hear about.
 ///
 /// Events and their detail:
-/// - `messenger_ready`   `{ms}` — signed in and loaded, from opening the messenger
+/// - `messenger_ready`   `{ms}` — signed in and on screen, from opening the messenger (`cached: true` on a reopen, once it has refreshed)
 /// - `messenger_failed`  `{reason, detail}` — `network` or `http_<status>`; the customer saw the fallback screen
 /// - `auth_failed`       `{status, detail, failures}` — the badge / push calls, not the messenger itself
 /// - `identity_rejected` `{code}` — the backend's signature was refused; the customer is anonymous until fixed
@@ -222,6 +222,10 @@ class GLSupportChat {
   static int _generation = 0;
   static int _signingInFor = 0;
 
+  /// The last sign-in that worked, and for whom: the messenger opened just
+  /// after it takes it rather than sign in again ([_messengerSignIn]).
+  static ({MessengerApi api, int generation, DateTime at, MessengerSession session})? _lastSignIn;
+
   static SessionStore _store = const PrefsSessionStore();
   static http.Client? _httpClient;
   static RealtimeFactory _realtime = socketIoChannel;
@@ -256,6 +260,7 @@ class GLSupportChat {
     _api?.close();
     _api = MessengerApi(apiUrl: apiUrl, productId: productId.trim(), client: _httpClient)
       ..reauthenticate = _renewToken;
+    _lastSignIn = null;
     // What the messenger held was fetched through the API before (perhaps
     // another chatbot's). On screen, the next present() replaces it.
     final kept = _controller;
@@ -292,6 +297,7 @@ class GLSupportChat {
     final someoneElse = _identity?.id != identity.id;
     _identity = identity;
     _generation++;
+    _lastSignIn = null;
     _api?.token = null;
     // The same customer again (fresh details before present): what the
     // messenger holds is still theirs. Anyone else: it goes now.
@@ -320,6 +326,7 @@ class GLSupportChat {
     final bearer = api?.token;
     _identity = null;
     _generation++;
+    _lastSignIn = null;
     // Their conversations, messages and draft go now, not at the next open.
     _forgetMessenger(restart: false);
     _authFailures = 0;
@@ -411,7 +418,7 @@ class GLSupportChat {
       controller = _controller;
       if (controller == null || !identical(controller.api, api)) {
         controller?.dispose();
-        controller = MessengerController(api: api, signIn: _signIn, realtimeFactory: _realtime, onDiagnostic: _diag, onUnreadChanged: _emitUnread);
+        controller = MessengerController(api: api, signIn: _messengerSignIn, realtimeFactory: _realtime, onDiagnostic: _diag, onUnreadChanged: _emitUnread);
         _controller = controller;
       }
     }
@@ -488,6 +495,7 @@ class GLSupportChat {
     _identity = null;
     _generation++;
     _signingIn = null;
+    _lastSignIn = null;
     _forgetShown();
     _controller?.dispose();
     _controller = null;
@@ -550,7 +558,31 @@ class GLSupportChat {
     if (session.visitorId.isNotEmpty && session.visitorId != stored) await _store.saveVisitorId(product, session.visitorId);
     _authFailures = 0;
     _authPausedUntil = null;
+    if (generation == _generation) _lastSignIn = (api: api, generation: generation, at: DateTime.now(), session: session);
     return session;
+  }
+
+  /// The messenger's sign-in. Opened for the first time just after a
+  /// sign-in for the same customer worked — `login` before `present`, as the
+  /// README recommends — it takes that session rather than ask the server
+  /// again: a round trip less before Home shows. Only within a minute, as the
+  /// session carries the office hours; never on a reopen, which already
+  /// shows what it has and needs the server's fresh word (an email left
+  /// since, say); and never for a token the server refused, which
+  /// [_renewToken] renews through [_signIn].
+  static Future<MessengerSession> _messengerSignIn() {
+    final last = _lastSignIn;
+    final api = _api;
+    if (last != null &&
+        api != null &&
+        _controller?.session == null &&
+        identical(last.api, api) &&
+        last.generation == _generation &&
+        api.token == last.session.token &&
+        DateTime.now().difference(last.at) < const Duration(minutes: 1)) {
+      return Future<MessengerSession>.value(last.session);
+    }
+    return _signIn();
   }
 
   /// A 401 mid-session (the 24-hour token ran out): sign in again. The token

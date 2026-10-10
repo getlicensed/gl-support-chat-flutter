@@ -32,6 +32,10 @@ class OutgoingMessage {
   String? error;
   bool get failed => error != null;
 
+  /// Failed for want of an answer, after it was handed over: it may have
+  /// arrived all the same (see [MessengerController]'s `_arrivedAfterAll`).
+  bool _noAnswer = false;
+
   /// Waiting for the connection: it goes by itself, in the order it was
   /// written, as soon as the messenger is connected. False while it is
   /// being sent, and once it has failed.
@@ -101,6 +105,11 @@ class MessengerController extends ChangeNotifier {
   /// it may be about to change.
   bool refreshing = false;
 
+  /// The open conversation (or the opening menu) has been fetched for this
+  /// customer. The first open shows Home before it is; until then the
+  /// conversation screen shows a spinner, not the opening chips.
+  bool liveLoaded = false;
+
   /// Moves on at every [reset]: the screens close whatever they had opened
   /// for the customer before.
   int resets = 0;
@@ -139,6 +148,11 @@ class MessengerController extends ChangeNotifier {
   /// Teammates connected right now; null while not known — before the
   /// connection says, and whenever it is not connected.
   int? agentsOnline;
+
+  /// The last count the server sent, kept through a reconnect and a reopen.
+  /// Only for the "leave your email" form: without it the form went at every
+  /// drop and reopen and came back when the count did, moving the thread.
+  int? _lastOnline;
   Timer? _reauthTimer;
   int _reauthFailures = 0;
 
@@ -174,6 +188,10 @@ class MessengerController extends ChangeNotifier {
   int _epoch = 0;
   Future<void>? _startRun;
   Future<void>? _loadRun;
+
+  /// The Messages list's part of the loads that are out: the first open
+  /// shows Home once it is in.
+  Future<void>? _listLoad;
   int _attached = 0;
 
   /// The screens have closed: the connection goes once nothing is left to send.
@@ -213,10 +231,12 @@ class MessengerController extends ChangeNotifier {
 
   /// Sign in, load the conversations and the open thread, and go live.
   ///
-  /// The first time, [phase] is loading until all of that is in; a failure
-  /// leaves it failed with a reason, and [start] again retries. Once it has
-  /// been ready (a reopen), the screens keep showing what is there while it
-  /// refreshes behind them, and a failure leaves it as it was.
+  /// The first time, [phase] is loading until the sign-in and the Messages
+  /// list are in (what Home shows); the open conversation follows behind
+  /// ([liveLoaded]). A failed sign-in leaves it failed with a reason, and
+  /// [start] again retries. Once it has been ready (a reopen), the screens
+  /// keep showing what is there while it refreshes behind them, and a
+  /// failure leaves it as it was.
   Future<void> start() {
     _suspended = false;
     _idleTimer?.cancel();
@@ -289,10 +309,19 @@ class MessengerController extends ChangeNotifier {
     // The loads and the connection side by side, not one after the other.
     loads ??= _loads(epoch);
     _ensureChannel();
+    if (!cached) {
+      // Home shows the Messages list, never the open conversation: it is up
+      // once the list is in, a round trip sooner, and the conversation comes
+      // in behind it (a push waits for it on [refreshing]).
+      await (_listLoad ?? loads);
+      if (epoch != _epoch) return;
+      phase = MessengerPhase.ready;
+      _diag('messenger_ready', <String, Object?>{'ms': _now().difference(opened).inMilliseconds});
+      _notify();
+    }
     await loads;
     if (epoch != _epoch) return;
-    if (!cached) phase = MessengerPhase.ready;
-    _diag('messenger_ready', <String, Object?>{'ms': _now().difference(opened).inMilliseconds, if (cached) 'cached': true});
+    if (cached) _diag('messenger_ready', <String, Object?>{'ms': _now().difference(opened).inMilliseconds, 'cached': true});
     _notify();
     if (_suspended) _closeWhenIdle();
   }
@@ -315,11 +344,15 @@ class MessengerController extends ChangeNotifier {
   Future<void> _runLoads(int epoch) async {
     try {
       // Each catches its own failure: one that fails never blanks the other.
-      await Future.wait<void>(<Future<void>>[_loadOpen(epoch), refreshConversations()]);
+      final open = _loadOpen(epoch);
+      final list = _listLoad = refreshConversations();
+      await Future.wait<void>(<Future<void>>[open, list]);
     } finally {
       if (epoch == _epoch) {
         _loadRun = null;
+        _listLoad = null;
         refreshing = false;
+        liveLoaded = true;
         _notify();
       }
     }
@@ -374,11 +407,15 @@ class MessengerController extends ChangeNotifier {
   void _mergeLive(ConversationDetail d, {int unread = 0}) {
     final fetched = d.messages.where((m) => !m.isSystem).toList();
     final ids = fetched.map((m) => m.id).toSet();
+    final had = live.map((m) => m.id).toSet();
     final since = live.where((m) => m.conversationId == d.id && !ids.contains(m.id)).toList();
     live
       ..clear()
       ..addAll(fetched)
       ..addAll(since);
+    for (final m in fetched) {
+      if (!had.contains(m.id)) _arrivedAfterAll(m);
+    }
     agentSeenAt = d.agentLastSeenAt ?? agentSeenAt;
     _seedCsat(d.csat);
     if (unread > 0) {
@@ -439,12 +476,14 @@ class MessengerController extends ChangeNotifier {
     _releaseWaiting();
     _startRun = null;
     _loadRun = null;
+    _listLoad = null;
     _delivering = false;
     phase = MessengerPhase.loading;
     failure = null;
     session = null;
     visitorEmail = null;
     refreshing = false;
+    liveLoaded = false;
     conversations = <ConversationSummary>[];
     conversationsLoaded = false;
     liveId = null;
@@ -461,9 +500,13 @@ class MessengerController extends ChangeNotifier {
     collectError = null;
     agentTyping = false;
     sendError = null;
+    // The screen that showed the customer before goes in a moment; until
+    // then nothing that arrives for the next one counts as read.
+    viewingLive = false;
     draft = '';
     link = LinkState.connecting;
     agentsOnline = null;
+    _lastOnline = null;
     _reauthFailures = 0;
     csat.clear();
     articles = <ArticleSummary>[];
@@ -508,6 +551,16 @@ class MessengerController extends ChangeNotifier {
     _closeChannel();
     link = LinkState.connecting;
     agentsOnline = null; // stale by the next open
+    // Closed, and kept until sign-out: only the photos the open conversation
+    // shows stay in memory (to draw at once at the next open), not every
+    // one sent or looked at since the app started. The rest are fetched
+    // again if looked at.
+    final shown = <String?>{
+      for (final m in live)
+        for (final a in m.attachments) a.uploadId,
+      for (final o in outgoing) o.uploadId,
+    };
+    _files.removeWhere((id, _) => !shown.contains(id));
     _notify();
   }
 
@@ -625,6 +678,7 @@ class MessengerController extends ChangeNotifier {
       case 'presence:update':
         final n = data['agentsOnline'];
         final online = n is num ? n.toInt() : null;
+        if (online != null) _lastOnline = online;
         if (online == agentsOnline) return; // the same again: nothing to redraw
         agentsOnline = online;
         _notify();
@@ -730,7 +784,32 @@ class MessengerController extends ChangeNotifier {
       }
     }
     live.add(msg);
+    _arrivedAfterAll(msg);
     _notify();
+  }
+
+  /// One of the customer's messages has reached the thread from the server.
+  /// A send that gave up waiting for its answer on the same words (the
+  /// connection went, or the phone slept, after it was handed over) was this
+  /// one: it arrived after all. Its failed bubble goes, rather than show the
+  /// message twice and offer Try again, which would send a second copy.
+  void _arrivedAfterAll(ChatMessage m) {
+    for (final out in outgoing) {
+      if (!out._noAnswer || !out.failed || !_isCopyOf(m, out)) continue;
+      outgoing.remove(out);
+      if (!outgoing.any((o) => o.failed)) sendError = null;
+      return;
+    }
+  }
+
+  /// [m] is the server's copy of [out]: the customer's, with the same words
+  /// and photo, and not an older message that happens to say the same.
+  static bool _isCopyOf(ChatMessage m, OutgoingMessage out) {
+    if (!m.fromVisitor || bodyBesideFiles(m).trim() != out.text) return false;
+    final uploads = m.attachments.map((a) => a.uploadId).whereType<String>();
+    if (out.image != null ? !uploads.contains(out.uploadId) : m.attachments.isNotEmpty) return false;
+    // The phone's clock and the server's differ a little: a wide margin.
+    return !m.createdAt.isBefore(out.createdAt.subtract(const Duration(minutes: 10)));
   }
 
   /// Keep the Messages list in step with a message: its preview, its time,
@@ -899,7 +978,6 @@ class MessengerController extends ChangeNotifier {
     final body = text.trim();
     if (body.isEmpty && image == null) return Future<bool>.value(false);
     _stopVisitorTyping();
-    if (body.isNotEmpty) draft = '';
     final out = OutgoingMessage(
       localId: 'local-${++_seq}',
       text: body,
@@ -974,7 +1052,8 @@ class MessengerController extends ChangeNotifier {
   Future<bool?> _deliver(OutgoingMessage out, int epoch) async {
     out
       ..queued = false
-      ..error = null;
+      ..error = null
+      .._noAnswer = false;
     sendError = null;
     _notify();
     try {
@@ -991,11 +1070,18 @@ class MessengerController extends ChangeNotifier {
         _notify();
         return null;
       }
+      final before = live.map((m) => m.id).toSet();
       final ack = await ch.request('visitor:message', <String, dynamic>{
         'body': out.text,
         if (out.uploadId != null) 'attachments': <String>[out.uploadId!],
       });
       if (epoch != _epoch) return false;
+      // No answer, but the server's copy came while waiting for one: it went.
+      if (ack['error'] == 'timeout' && live.any((m) => !before.contains(m.id) && _isCopyOf(m, out))) {
+        outgoing.remove(out);
+        _notify();
+        return true;
+      }
       if (ack['ok'] == true && ack['message'] is Map) {
         final msg = ChatMessage.fromJson(Map<String, dynamic>.from(ack['message'] as Map));
         outgoing.remove(out);
@@ -1010,7 +1096,9 @@ class MessengerController extends ChangeNotifier {
         _notify();
         return true;
       }
-      out.error = sendFailureText(ack['error']);
+      out
+        ..error = sendFailureText(ack['error'])
+        .._noAnswer = ack['error'] == 'timeout';
     } on ApiException catch (e) {
       if (epoch != _epoch) return false;
       out.error = e.status == 0 ? 'No connection — check your signal and try again.' : e.message;
@@ -1034,7 +1122,9 @@ class MessengerController extends ChangeNotifier {
     return e;
   }
 
-  /// The customer is typing (for the team's "typing…"). Keeps [draft] too.
+  /// The customer is typing (for the team's "typing…"). Keeps [draft] too:
+  /// the composer empties it when it sends, as only what it sends was the
+  /// draft (a chip tapped meanwhile leaves it as typed).
   void composerChanged(String text) {
     draft = text;
     final id = liveId;
@@ -1107,6 +1197,9 @@ class MessengerController extends ChangeNotifier {
 
   /// Null when the customer may type; otherwise the hint to show instead.
   String? get composerLock {
+    // Until the open conversation is in (the first open), nobody knows yet
+    // whether the workflow lets the customer type.
+    if (!liveLoaded) return 'Loading…';
     final p = preview;
     if (live.isEmpty && p != null && !p.letCustomerType) return 'Choose an option above';
     final prompt = livePrompt;
@@ -1286,7 +1379,10 @@ class MessengerController extends ChangeNotifier {
 
   // ---- "leave your email" while nobody is online --------------------------------
 
-  bool get showEmailBar => agentsOnline == 0 && (visitorEmail ?? '').isEmpty || emailSavedFor != null;
+  /// From the last count the server sent, while a reconnect or a reopen
+  /// waits for the next: the form stays put rather than go and come back.
+  /// (The header's line uses only the live count.)
+  bool get showEmailBar => (agentsOnline ?? _lastOnline) == 0 && (visitorEmail ?? '').isEmpty || emailSavedFor != null;
 
   /// Null when saved; otherwise what to tell the customer.
   Future<String?> leaveEmail(String email) async {

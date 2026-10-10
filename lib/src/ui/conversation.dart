@@ -35,12 +35,16 @@ class _ConversationPageState extends State<ConversationPage> {
 
   bool get _live => widget.conversationId == null;
 
+  /// The controller's [MessengerController.resets] when this opened.
+  int _resets = 0;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_controller != null) return;
     final c = context.messenger;
     _controller = c;
+    _resets = c.resets;
     if (_live) {
       // After this frame: the controller notifies, and the tree is building.
       WidgetsBinding.instance.addPostFrameCallback((_) => c.setViewingLive(true));
@@ -52,9 +56,15 @@ class _ConversationPageState extends State<ConversationPage> {
   @override
   void dispose() {
     final c = _controller;
+    final resets = _resets;
     // After this frame: the controller notifies, and the tree is being torn
-    // down now (notifying here was an error on every Back from a chat).
-    if (_live && c != null) WidgetsBinding.instance.addPostFrameCallback((_) => c.setViewingLive(false));
+    // down now (notifying here was an error on every Back from a chat). Not
+    // after a reset: what is on screen then is the next customer's.
+    if (_live && c != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (c.resets == resets) c.setViewingLive(false);
+      });
+    }
     super.dispose();
   }
 
@@ -91,7 +101,11 @@ class _ConversationPageState extends State<ConversationPage> {
       for (final m in c.live) {
         if (m.fromVisitor) mine++;
       }
-      thread = _Thread(rows: _liveRows(context, c), sent: mine, received: c.live.length + c.outgoing.length - mine);
+      // The first open shows Home before the open conversation is in: a
+      // spinner until it is, never the opening chips flashing before it.
+      thread = !c.liveLoaded && c.live.isEmpty && c.outgoing.isEmpty
+          ? const Center(child: CircularProgressIndicator())
+          : _Thread(rows: _liveRows(context, c), sent: mine, received: c.live.length + c.outgoing.length - mine);
     } else {
       thread = FutureBuilder<ConversationDetail>(
         future: _past,
@@ -113,47 +127,105 @@ class _ConversationPageState extends State<ConversationPage> {
         },
       );
     }
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: statusBarOnBrand(c.brand),
-      child: Scaffold(
-        backgroundColor: Colors.white,
-        body: Column(
-          children: [
-            _Header(live: _live),
-            if (_live) const ConnectionBar(),
-            // Side insets (a phone on its side): clear of the notch and the
-            // rounded corners, as the header is. The footer never takes more
-            // than the room under the header: on a phone on its side with
-            // the keyboard up and a large text size, the composer gives way
-            // (and scrolls inside) rather than overflow the screen.
-            Expanded(
-              child: LayoutBuilder(
-                builder: (context, box) => Column(
-                  children: [
-                    Expanded(child: SafeArea(top: false, bottom: false, child: thread)),
-                    ConstrainedBox(
-                      constraints: BoxConstraints(maxHeight: box.maxHeight),
-                      child: SafeArea(
-                        top: false,
-                        bottom: false,
-                        child: _live
-                            ? _LiveFooter(compact: cramped, emailBar: !tight)
-                            // While the CSAT comment is being typed the footer
-                            // steps aside: the box and its Send need the room.
-                            // Kept built, so it comes back whole, not a frame
-                            // without its line.
-                            : Offstage(offstage: keyboard > 0, child: _PastFooter(conversationId: widget.conversationId!, past: _past)),
+    return _GoneOnReset(
+      controller: c,
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: statusBarOnBrand(c.brand),
+        child: Scaffold(
+          backgroundColor: Colors.white,
+          body: Column(
+            children: [
+              _Header(live: _live),
+              if (_live) const ConnectionBar(),
+              // Side insets (a phone on its side): clear of the notch and the
+              // rounded corners, as the header is. The footer never takes more
+              // than the room under the header: on a phone on its side with
+              // the keyboard up and a large text size, the composer gives way
+              // (and scrolls inside) rather than overflow the screen.
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, box) => Column(
+                    children: [
+                      Expanded(child: SafeArea(top: false, bottom: false, child: thread)),
+                      ConstrainedBox(
+                        constraints: BoxConstraints(maxHeight: box.maxHeight),
+                        child: SafeArea(
+                          top: false,
+                          bottom: false,
+                          child: _live
+                              ? _LiveFooter(compact: cramped, emailBar: !tight)
+                              // While the CSAT comment is being typed the footer
+                              // steps aside: the box and its Send need the room.
+                              // Kept built, so it comes back whole, not a frame
+                              // without its line.
+                              : Offstage(offstage: keyboard > 0, child: _PastFooter(conversationId: widget.conversationId!, past: _past)),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+/// A screen with what the customer signed in now has (a conversation, a
+/// photo). Once the controller is reset — a sign-out, or someone else
+/// signing in — it goes, even from under a screen of the app's own that
+/// the messenger never pops (a lock or sign-in screen): when the app pops
+/// that, the next customer never lands on it.
+class _GoneOnReset extends StatefulWidget {
+  const _GoneOnReset({required this.controller, required this.child});
+  final MessengerController controller;
+  final Widget child;
+
+  @override
+  State<_GoneOnReset> createState() => _GoneOnResetState();
+}
+
+class _GoneOnResetState extends State<_GoneOnReset> {
+  late final int _resets;
+  bool _leaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _resets = widget.controller.resets;
+    widget.controller.addListener(_check);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_check);
+    super.dispose();
+  }
+
+  void _check() {
+    if (_leaving || widget.controller.resets == _resets) return;
+    _leaving = true;
+    // After the frame: the controller may be telling its listeners mid-build.
+    WidgetsBinding.instance
+      ..addPostFrameCallback((_) {
+        if (!mounted) return;
+        final route = ModalRoute.of(context);
+        if (route == null || !route.isActive) return; // already on its way out
+        if (!(route.settings.name ?? '').startsWith('$messengerRoutePrefix/')) return; // never one of the app's
+        final navigator = Navigator.of(context);
+        if (route.isCurrent) {
+          navigator.pop();
+        } else {
+          navigator.removeRoute(route);
+        }
+      })
+      ..ensureVisualUpdate();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 // ==========================================================================
@@ -803,13 +875,15 @@ class _RichTextState extends State<_RichText> {
   List<InlineSpan> _build() {
     _forget();
     final link = TextStyle(color: widget.linkColor, decoration: TextDecoration.underline, decorationColor: widget.linkColor);
-    return <InlineSpan>[
-      for (final r in linkify(widget.text))
-        if (r.isLink)
-          TextSpan(text: r.text, style: link, recognizer: _tap(Uri.parse(r.url!)))
-        else
-          TextSpan(text: r.text),
-    ];
+    final spans = <InlineSpan>[];
+    for (final r in linkify(widget.text)) {
+      // A link the URL parser refuses (an unfilled placeholder such as
+      // "https://[booking-link]") stays plain text. Parsed while building,
+      // it threw and hid the whole message behind an error box.
+      final url = r.isLink ? Uri.tryParse(r.url!) : null;
+      spans.add(url == null ? TextSpan(text: r.text) : TextSpan(text: r.text, style: link, recognizer: _tap(url)));
+    }
+    return spans;
   }
 
   TapGestureRecognizer _tap(Uri url) {
@@ -1007,13 +1081,21 @@ class _Photo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => showDialog<void>(
-        context: context,
-        builder: (_) => GestureDetector(
-          onTap: () => Navigator.of(context).pop(),
-          child: InteractiveViewer(child: Image(image: image)),
-        ),
-      ),
+      onTap: () {
+        final scope = context.getInheritedWidgetOfExactType<MessengerScope>();
+        showDialog<void>(
+          context: context,
+          // Named as the messenger's: closed with it, and with a sign-out.
+          routeSettings: const RouteSettings(name: '$messengerRoutePrefix/photo'),
+          builder: (_) {
+            final viewer = GestureDetector(
+              onTap: () => Navigator.of(context).pop(),
+              child: InteractiveViewer(child: Image(image: image)),
+            );
+            return scope == null ? viewer : _GoneOnReset(controller: scope.controller, child: viewer);
+          },
+        );
+      },
       child: ClipRRect(
         borderRadius: BorderRadius.circular(15),
         child: ConstrainedBox(
@@ -1036,13 +1118,21 @@ class _FileChip extends StatelessWidget {
     final fg = mine ? context.brand.onPrimary : Palette.text;
     return InkWell(
       onTap: onTap,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.attach_file, size: 16, color: fg),
-          const SizedBox(width: 4),
-          Flexible(child: Text(name, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 14, color: fg))),
-        ],
+      // At least 44 points tall: the way to open a letter the team sends.
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: RoundIconButton.minTarget),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          widthFactor: 1,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.attach_file, size: 16, color: fg),
+              const SizedBox(width: 4),
+              Flexible(child: Text(name, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 14, color: fg))),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1764,12 +1854,15 @@ class _ComposerState extends State<_Composer> {
     if (value.trim().isEmpty) return;
     _text.clear();
     setState(() {});
+    c.composerChanged(''); // what it sends was the draft
     c.send(value);
   }
 
   Future<void> _attach() async {
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
+      // Named as the messenger's: closed with it.
+      routeSettings: const RouteSettings(name: '$messengerRoutePrefix/photo-source'),
       builder: (sheet) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1861,6 +1954,9 @@ class _ComposerState extends State<_Composer> {
                 cursorColor: brand.primary,
                 decoration: InputDecoration(
                   hintText: 'Type a message…',
+                  // One line at any text size: a hint that wrapped held the
+                  // box two lines tall for one line of text.
+                  hintMaxLines: 1,
                   hintStyle: const TextStyle(color: Palette.hint),
                   isDense: true,
                   filled: true,

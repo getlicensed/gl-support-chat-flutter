@@ -392,6 +392,56 @@ void main() {
     expect(tapped, isTrue);
   });
 
+  testWidgets('a link the URL parser refuses stays text: the message is read, never an error box', (tester) async {
+    await openThread(tester, messages: <Map<String, dynamic>>[
+      msg('a', 'agent', 'Book here: https://[booking-link] and log in at https://portal.example.com:login today.', at: later(0)),
+      msg('b', 'agent', 'Or see https://www.gov.uk/sia for the rules.', at: later(1)),
+    ]);
+    expect(tester.takeException(), isNull);
+    expect(find.byType(ErrorWidget), findsNothing);
+    expect(find.text('Book here: https://[booking-link] and log in at https://portal.example.com:login today.', findRichText: true), findsOneWidget);
+    TextSpan? link;
+    tester.widget<RichText>(find.byWidgetPredicate((w) => w is RichText && w.text.toPlainText().startsWith('Or see'))).text.visitChildren((span) {
+      if (span is TextSpan && span.text == 'https://www.gov.uk/sia') link = span;
+      return true;
+    });
+    expect(link?.recognizer, isA<TapGestureRecognizer>(), reason: 'a good link beside them still opens');
+  });
+
+  testWidgets('a file the team sends takes taps on 44 points, not the 20 of its line', (tester) async {
+    await openThread(tester, messages: <Map<String, dynamic>>[
+      msg('a', 'agent', '[Document]', at: later(0), attachments: <Object?>[
+        <String, dynamic>{'name': 'Application-confirmation-letter-Ayesha-Khan.pdf', 'url': 'https://files.test/letter.pdf', 'contentType': 'application/pdf'},
+      ]),
+    ]);
+    final chip = find.ancestor(of: find.text('Application-confirmation-letter-Ayesha-Khan.pdf'), matching: find.byType(InkWell)).first;
+    expect(tester.getSize(chip).height, greaterThanOrEqualTo(44));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('at text size 2.0 one line of text is a one-line box', (tester) async {
+    await openThread(tester, messages: thread(4), phone: Phone.iphoneSE, textScale: 2.0);
+    setKeyboard(tester, Phone.iphoneSE, Phone.iphoneSE.keyboard);
+    await tester.enterText(composer(), 'Hello?');
+    await settle(tester, frames: 3);
+    // Two lines of the hint held it at about 166 points.
+    expect(tester.getSize(composer()).height, lessThan(90));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets("Home's dot is grey until the connection is up, as the chat header's", (tester) async {
+    channel = _NeverConnects();
+    usePhone(tester, Phone.iphone13);
+    final c = await openMessenger(tester, server, channel);
+    StatusDot dot() => tester.widget<StatusDot>(find.descendant(of: find.byType(HomeTab), matching: find.byType(StatusDot)));
+    expect(c.connected, isFalse);
+    expect(dot().away, isTrue, reason: 'nobody is known online yet');
+    channel.server('connect', null);
+    channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 1});
+    await tester.pump();
+    expect(dot().away, isFalse);
+  });
+
   testWidgets('Back, Close, chips and Send take taps on at least 44 × 44', (tester) async {
     usePhone(tester, Phone.iphone13);
     await openMessenger(tester, server, channel);
@@ -627,6 +677,39 @@ void main() {
     c.reset(); // a sign-out, or someone else signing in
     await open();
     expect(typed(), isEmpty, reason: 'never the customer before');
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('a chip tapped with words in the box sends the chip; the words are still there at the next open', (tester) async {
+    usePhone(tester, Phone.iphone13);
+    answerSends();
+    final c = controllerFor(server, channel);
+    String typed() => tester.widget<EditableText>(find.descendant(of: composer(), matching: find.byType(EditableText))).controller.text;
+    Future<void> open() async {
+      await tester.pumpWidget(MaterialApp(home: GLSupportChatPage(controller: c)));
+      await settle(tester);
+      await tester.tap(find.text('Send us a message'));
+      await settle(tester);
+    }
+
+    await open();
+    await tester.enterText(composer(), 'My licence number is 1234');
+    await tester.pump();
+    await tester.tap(find.text('How do I renew my licence?'));
+    await settle(tester);
+    expect(channel.requests.where((r) => r.$1 == 'visitor:message').map((r) => r.$2['body']), <Object?>['How do I renew my licence?']);
+    expect(typed(), 'My licence number is 1234');
+    await tester.pumpWidget(const SizedBox()); // closed
+
+    await open();
+    expect(typed(), 'My licence number is 1234', reason: 'never sent, so kept');
+    await tester.tap(find.bySemanticsLabel('Send'));
+    await settle(tester);
+    await tester.pumpWidget(const SizedBox());
+
+    await open();
+    expect(typed(), isEmpty, reason: 'sent: gone from the box');
     await tester.pumpWidget(const SizedBox());
     c.dispose();
   });

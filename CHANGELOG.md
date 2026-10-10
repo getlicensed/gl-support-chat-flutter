@@ -1,3 +1,18 @@
+## 0.4.5
+
+Smoother and steadier on phones. Nothing to change in an app; a push handler can now open the exact conversation (see below and the README).
+
+- **Opens at once.** Opened again for the same customer, the messenger shows what it had straight away and refreshes behind it. The first open after the app starts shows Home as soon as the sign-in and the Messages list are in, and right after `login` it uses that sign-in instead of making a second one; the open conversation follows. All of it goes the moment the customer signs out or someone else signs in: conversations, messages, unsent text, anything still waiting to go.
+- **Sends while connecting.** Send no longer waits for the connection. A message shows at once, waits while the phone connects, and goes once, in the order written. A message that reached the team after its answer was lost (a drop, a locked phone) no longer shows as failed next to itself, with a Try again that would send it twice.
+- **The keyboard goes away** on a drag of the thread or a tap outside the box. Send and the photo button keep it up.
+- **The latest stays in view.** The customer's own message always comes into view, and so does a reply when they are at the latest. A customer reading further up keeps their place, and a "New message" pill takes them down.
+- **Readable in dark mode.** In an app that follows the phone's dark mode, typed text, hints and the help search now read on white. They were light grey.
+- **Back steps back.** Android back goes back a screen at a time, then to the tab the messenger opened on, then out; it used to close the whole messenger from a tab. On an iPhone a swipe from the left edge steps back.
+- **Catches up when the app comes back** from the background, without duplicates. Nothing is marked read while the phone is in a pocket, and nothing of a customer who has just signed in is marked read as the screen before closes.
+- **A push opens its conversation.** `GLSupportChatScreen.fromPush(message.data)` gives the conversation the push names (`GLSupportChatScreen.conversation(id)`). `GLSupportChatScreen.messages` now checks first, then opens the conversation with the unread reply. A push tapped while the messenger is open goes there in the messenger already up, not a second one. The messenger never closes the app's own screens: a lock or sign-in screen the app put over it stays.
+- **Bigger tap targets.** Back, Close, chips, cards, the team's files and Send take taps on at least 44 × 44 points. Names, times and ticks read at 4.5:1.
+- Smaller: while typing on a phone the away "leave your email" form is one line, and it no longer comes and goes (moving the thread) on every reopen and reconnect. Text typed and not sent is in the box at the next open, even after a chip was tapped. At large text sizes one line of text is a one-line box. A link the team wrote with a placeholder ("https://[booking-link]") no longer hides the message. Home's status dot stays grey until the connection is up, and "Active now" only shows once the server says so. The status bar matches the header. Once the messenger closes, only the open conversation's photos stay in memory.
+
 ## 0.4.4
 
 - **Every `login` reaches the server with the identity it was given.** A `login` made while another sign-in was still out (the badge, the push token, an open messenger, an earlier `login`) used to join that one, which carried the customer before; the new name, email or details then waited for the next chat open or the 24-hour renewal. Now it waits for the one that is out and signs in afresh, and the token kept is the last customer's; the same after `logout`.
