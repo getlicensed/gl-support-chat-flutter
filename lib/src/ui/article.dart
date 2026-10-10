@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart';
 
 import '../api/models.dart';
@@ -26,10 +27,17 @@ class _ArticlePageState extends State<ArticlePage> {
     _article ??= context.messenger.article(widget.slug);
   }
 
-  void _reload() => setState(() => _article = context.messenger.article(widget.slug));
+  // A block, not an arrow: setState refuses a callback that returns the Future.
+  void _reload() {
+    setState(() {
+      _article = context.messenger.article(widget.slug);
+    });
+  }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AnnotatedRegion<SystemUiOverlayStyle>(value: statusBarStyle(darkIcons: true), child: _page(context));
+
+  Widget _page(BuildContext context) {
     final brand = context.brand;
     return Scaffold(
       backgroundColor: Colors.white,
@@ -45,16 +53,17 @@ class _ArticlePageState extends State<ArticlePage> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('This article could not be loaded.', style: TextStyle(fontSize: 14, color: Palette.faint)),
+                    const Text('This article could not be loaded.', style: TextStyle(fontSize: 14, color: Palette.muted)),
                     TextButton(onPressed: _reload, child: const Text('Try again')),
                   ],
                 ),
               );
             } else if (a == null) {
-              body = const Center(child: Text('Loading…', style: TextStyle(fontSize: 14, color: Palette.faint)));
+              body = const Center(child: Text('Loading…', style: TextStyle(fontSize: 14, color: Palette.muted)));
             } else {
               final url = a.url;
               body = ListView(
+                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                 padding: const EdgeInsets.fromLTRB(22, 20, 22, 28),
                 children: [
                   Text(a.title, style: const TextStyle(fontSize: 22, height: 1.25, fontWeight: FontWeight.w700, color: Palette.text)),
@@ -116,16 +125,19 @@ class _ArticlePageState extends State<ArticlePage> {
             return Column(
               children: [
                 Container(
-                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  // The buttons' 44-point touch areas reach 5 points past
+                  // their circles; the padding gives that back, so the
+                  // circles sit where they always did.
+                  padding: const EdgeInsets.fromLTRB(9, 5, 9, 5),
                   decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFFF1F3F4)))),
                   child: Row(
                     children: [
                       RoundIconButton(icon: Icons.chevron_left, tooltip: 'Back', size: 34, onTap: () => Navigator.of(context).maybePop()),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 5),
                       Expanded(
                         child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Palette.text)),
                       ),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 5),
                       RoundIconButton(icon: Icons.close, tooltip: 'Close', size: 34, onTap: () => closeMessenger(context)),
                     ],
                   ),

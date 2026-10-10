@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/models.dart';
 import '../core/format.dart';
@@ -29,6 +30,23 @@ class _MessengerTabsState extends State<MessengerTabs> {
 
   @override
   Widget build(BuildContext context) {
+    final brand = context.brand;
+    // Back (Android's button or gesture) steps back to the tab the messenger
+    // opened on before it closes the messenger.
+    return PopScope<Object?>(
+      canPop: _tab == widget.initialTab,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _go(widget.initialTab);
+      },
+      // Home's top is the brand colour; Messages and Help are white.
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: _tab == 0 ? statusBarOnBrand(brand) : statusBarStyle(darkIcons: true),
+        child: _tabs(context),
+      ),
+    );
+  }
+
+  Widget _tabs(BuildContext context) {
     final c = context.messenger;
     final brand = c.brand;
     return Scaffold(
@@ -140,6 +158,7 @@ class HomeTab extends StatelessWidget {
           SafeArea(
             bottom: false,
             child: ListView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
               children: [
                 Row(
@@ -147,7 +166,8 @@ class HomeTab extends StatelessWidget {
                     _Logo(session: s),
                     const Spacer(),
                     const TeamFaces(size: 40),
-                    const SizedBox(width: 12),
+                    // 12 to the circle: its 44-point touch area adds 4.
+                    const SizedBox(width: 8),
                     RoundIconButton(icon: Icons.close, tooltip: 'Close', light: true, onTap: () => closeMessenger(context)),
                   ],
                 ),
@@ -410,6 +430,7 @@ class MessagesTab extends StatelessWidget {
         color: brand.primary,
         onRefresh: c.refreshConversations,
         child: ListView.separated(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: const EdgeInsets.only(bottom: 96),
           itemCount: c.conversations.length,
           separatorBuilder: (_, __) => const Divider(height: 1, indent: 72, color: Color(0xFFF1F3F4)),
@@ -502,7 +523,9 @@ class _TabHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 12, 14, 12),
+      // The close button's 44-point touch area reaches 5 points past its
+      // circle; the padding gives that back, so the circle sits where it did.
+      padding: const EdgeInsets.fromLTRB(20, 7, 9, 7),
       decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFFF1F3F4)))),
       child: Row(
         children: [
@@ -584,9 +607,13 @@ class _HelpTabState extends State<HelpTab> {
               controller: _query,
               focusNode: _focus,
               onChanged: _changed,
+              onTapOutside: dismissKeyboard,
               textInputAction: TextInputAction.search,
+              style: fieldText,
+              cursorColor: brand.primary,
               decoration: InputDecoration(
                 hintText: 'Search for help',
+                hintStyle: const TextStyle(color: Palette.hint),
                 filled: true,
                 fillColor: const Color(0xFFF1F3F4),
                 suffixIcon: Icon(Icons.search, color: brand.primary),
@@ -597,6 +624,7 @@ class _HelpTabState extends State<HelpTab> {
           ),
           Expanded(
             child: ListView(
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 16),
               children: [
                 if (c.session?.helpBaseUrl == null)

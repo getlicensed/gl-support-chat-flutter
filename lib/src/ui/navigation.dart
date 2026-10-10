@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../api/models.dart';
@@ -8,17 +9,20 @@ import 'conversation.dart';
 /// A route for a messenger screen. It sits outside the subtree that holds the
 /// scope, so the scope and theme travel with it; its name keeps it among the
 /// screens "close" pops.
+///
+/// On an iPhone it is a Cupertino route whatever transitions the app's theme
+/// chose, so a swipe from the left edge steps back, as in every iOS app.
 Route<void> _route(BuildContext context, String name, Widget page) {
   final scope = MessengerScope.of(context);
   final theme = Theme.of(context);
-  return MaterialPageRoute<void>(
-    settings: RouteSettings(name: '$messengerRoutePrefix/$name'),
-    builder: (_) => MessengerScope(
-      controller: scope.controller,
-      fallback: scope.fallback,
-      child: Theme(data: theme, child: page),
-    ),
-  );
+  final settings = RouteSettings(name: '$messengerRoutePrefix/$name');
+  Widget build(BuildContext _) => MessengerScope(
+        controller: scope.controller,
+        fallback: scope.fallback,
+        child: Theme(data: theme, child: page),
+      );
+  if (theme.platform == TargetPlatform.iOS) return CupertinoPageRoute<void>(settings: settings, builder: build);
+  return MaterialPageRoute<void>(settings: settings, builder: build);
 }
 
 Future<void> pushMessengerPage(BuildContext context, String name, Widget page) =>
