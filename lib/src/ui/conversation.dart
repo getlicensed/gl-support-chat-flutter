@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../api/models.dart';
+import '../api/realtime.dart';
 import '../core/controller.dart';
 import '../core/format.dart';
 import 'common.dart';
@@ -275,14 +276,15 @@ List<Widget> _liveRows(BuildContext context, MessengerController c) {
           rows.add('preview-buttons:$i', _FlowButtons(buttons: meta.buttons, onTap: c.startWorkflow));
         }
       }
-    } else if (c.agentTyping) {
-      rows.add('typing', const _TypingRow());
+    } else if (c.typingAuthor != null) {
+      rows.add('typing', _TypingRow(author: c.typingAuthor!));
     } else {
       rows.add('intro', const _IntroAndChips());
     }
   } else {
     _messageRows(context, c, c.live, agentSeenAt: c.agentSeenAt, divider: c.dividerIndex, livePrompt: c.livePrompt, into: rows);
-    if (c.agentTyping) rows.add('typing', const _TypingRow());
+    final typing = c.typingAuthor;
+    if (typing != null) rows.add('typing', _TypingRow(author: typing));
   }
   final notice = c.flowNotice;
   if (notice != null) rows.add('notice', _ErrorLine(notice));
@@ -785,6 +787,11 @@ String _clock(BuildContext context, DateTime t) {
   return today ? time : '${loc.formatShortMonthDay(t)} $time';
 }
 
+/// A teammate's photo, by their user id: the path is only built from a
+/// well-formed id. Null without one.
+String? _teammatePhoto(String? userId) =>
+    userId != null && RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(userId) ? '/widget/avatar/$userId' : null;
+
 class _AuthorRow extends StatelessWidget {
   const _AuthorRow({required this.authorType, required this.name, required this.time, this.authorId});
 
@@ -801,8 +808,8 @@ class _AuthorRow extends StatelessWidget {
     } else if (authorType == 'bot') {
       // The workflow speaks as the chatbot: its logo, as Intercom shows the brand beside the bot.
       avatar = LogoAvatar(label: name, size: 22);
-    } else if (authorType == 'agent' && authorId != null && RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(authorId!)) {
-      avatar = PersonAvatar(name: name, photoPath: '/widget/avatar/$authorId', size: 22);
+    } else if (authorType == 'agent' && _teammatePhoto(authorId) != null) {
+      avatar = PersonAvatar(name: name, photoPath: _teammatePhoto(authorId), size: 22);
     } else {
       avatar = InitialAvatar(label: name, size: 22);
     }
@@ -1228,8 +1235,12 @@ class _ErrorLine extends StatelessWidget {
       );
 }
 
+/// The dots, beside whoever is typing: the teammate's photo (their initial
+/// without one), the chatbot's circle for the workflow, and a plain person
+/// from a server that does not say who.
 class _TypingRow extends StatefulWidget {
-  const _TypingRow();
+  const _TypingRow({required this.author});
+  final TypingAuthor author;
 
   @override
   State<_TypingRow> createState() => _TypingRowState();
@@ -1253,13 +1264,25 @@ class _TypingRowState extends State<_TypingRow> with SingleTickerProviderStateMi
 
   @override
   Widget build(BuildContext context) {
+    final who = widget.author;
+    final name = who.name;
+    final Widget face;
+    if (who.isBot) {
+      face = LogoAvatar(label: context.messenger.session?.productLabel ?? '', size: 22);
+    } else if (who.id != null) {
+      // The photo their replies show; their initial when they have none.
+      face = PersonAvatar(name: name ?? '', photoPath: _teammatePhoto(who.id), size: 22);
+    } else {
+      face = const InitialAvatar(label: '', size: 22, icon: Icons.person_outline);
+    }
     return Semantics(
-      label: 'Typing',
+      label: name == null || who.isBot ? 'Typing' : '$name is typing',
       child: Padding(
         padding: const EdgeInsets.only(top: 4, bottom: 6),
         child: Row(
           children: [
-            const InitialAvatar(label: '', size: 22, icon: Icons.person_outline),
+            // The label says who: the initial would only repeat it.
+            ExcludeSemantics(child: face),
             const SizedBox(width: 6),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),

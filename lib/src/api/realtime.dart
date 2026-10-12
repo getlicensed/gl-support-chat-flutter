@@ -12,6 +12,42 @@ class RealtimeEvent {
   final Object? data;
 }
 
+/// Who a `typing:start` or `typing:stop` is about: a teammate (`agent`) or
+/// the chatbot's workflow (`bot`).
+///
+/// Since 12 Oct a teammate's typing names them — their user id and the name
+/// the customer sees on their replies — so the messenger shows their face,
+/// as Intercom does. An older server names nobody: [id] and [name] are null.
+class TypingAuthor {
+  const TypingAuthor({required this.type, this.id, this.name});
+
+  /// `agent` · `bot`
+  final String type;
+
+  /// The teammate's user id: their photo is `/widget/avatar/<id>`.
+  final String? id;
+
+  /// The name on the teammate's replies.
+  final String? name;
+
+  bool get isBot => type == 'bot';
+
+  /// Null for the customer's own typing, which comes back to them only from
+  /// another of their screens. No type at all is a teammate, as before.
+  static TypingAuthor? fromJson(Map<String, dynamic> data) {
+    final type = data['authorType'];
+    if (type == 'visitor') return null;
+    String? text(Object? v) => v is String && v.trim().isNotEmpty ? v.trim() : null;
+    return TypingAuthor(type: type == 'bot' ? 'bot' : 'agent', id: text(data['authorId']), name: text(data['authorName']));
+  }
+
+  @override
+  bool operator ==(Object other) => other is TypingAuthor && other.type == type && other.id == id && other.name == name;
+
+  @override
+  int get hashCode => Object.hash(type, id, name);
+}
+
 /// The live connection the messenger talks over. An interface so the
 /// controller can be tested without a server.
 abstract class RealtimeChannel {

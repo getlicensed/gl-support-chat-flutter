@@ -131,7 +131,11 @@ class MessengerController extends ChangeNotifier {
   bool flowBusy = false;
   String? flowNotice;
   String? collectError;
-  bool agentTyping = false;
+
+  /// Who is typing a reply: a teammate (named by a server since 12 Oct, so
+  /// their face shows) or the workflow. Null while nobody is.
+  TypingAuthor? typingAuthor;
+  bool get agentTyping => typingAuthor != null;
   String? sendError;
   bool viewingLive = false;
 
@@ -498,7 +502,7 @@ class MessengerController extends ChangeNotifier {
     flowBusy = false;
     flowNotice = null;
     collectError = null;
-    agentTyping = false;
+    typingAuthor = null;
     sendError = null;
     // The screen that showed the customer before goes in a moment; until
     // then nothing that arrives for the next one counts as read.
@@ -526,7 +530,7 @@ class MessengerController extends ChangeNotifier {
     _suspended = true;
     _stopVisitorTyping();
     _agentTypingTimer?.cancel();
-    agentTyping = false;
+    typingAuthor = null;
     _settleStream();
     _closeWhenIdle();
   }
@@ -662,7 +666,7 @@ class MessengerController extends ChangeNotifier {
       case 'disconnect':
         link = LinkState.reconnecting;
         agentsOnline = null;
-        agentTyping = false;
+        typingAuthor = null;
         _notify();
         // The server dropped us on purpose (not a network blip): Socket.IO
         // does not come back by itself from that one.
@@ -691,19 +695,21 @@ class MessengerController extends ChangeNotifier {
         }
       case 'typing:start':
       case 'typing:stop':
-        if (data['authorType'] == 'visitor' || !_inLive(data)) return;
+        final who = TypingAuthor.fromJson(data);
+        if (who == null || !_inLive(data)) return;
         _agentTypingTimer?.cancel();
         final typing = e.name == 'typing:start';
         if (typing) {
           _agentTypingTimer = Timer(const Duration(seconds: 5), () {
-            agentTyping = false;
+            typingAuthor = null;
             _notify();
           });
         }
         // An agent typing says so again and again: the dots are already
         // there, only their timer moves.
-        if (typing == agentTyping) return;
-        agentTyping = typing;
+        final author = typing ? who : null;
+        if (author == typingAuthor) return;
+        typingAuthor = author;
         _notify();
       case 'ai:stream_start':
         _onStreamStart(data);
@@ -775,7 +781,7 @@ class MessengerController extends ChangeNotifier {
     }
     preview = null;
     if (!msg.fromVisitor) {
-      agentTyping = false;
+      typingAuthor = null;
       _agentTypingTimer?.cancel();
       if (_seeing) {
         unawaited(_markSeen());
@@ -847,7 +853,7 @@ class MessengerController extends ChangeNotifier {
     if (!_inLive(data)) return;
     final id = data['streamId'];
     if (id is! String || _liveById(id) != null) return;
-    agentTyping = false;
+    typingAuthor = null;
     _agentTypingTimer?.cancel();
     liveId ??= data['conversationId'] as String?;
     live.add(ChatMessage(
