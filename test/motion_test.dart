@@ -464,6 +464,116 @@ void main() {
       expect(find.byType(HomeTab), findsOneWidget);
     });
   });
+
+  // Found by a review of the first version of all this (12 Oct).
+  group('review', () {
+    List<Map<String, dynamic>> longThread() => <Map<String, dynamic>>[
+          for (var i = 0; i < 30; i++)
+            msg('m$i', i.isEven ? 'visitor' : 'agent', 'Message number $i, about the licence card and when it will arrive.', at: DateTime.utc(2026, 10, 6, 9, i).toIso8601String()),
+        ];
+    ScrollController scroll(WidgetTester tester) => tester.widget<ListView>(threadList()).controller!;
+
+    testWidgets('a reply taller than the screen on a small phone with the keyboard up: no error, and it is in view', (tester) async {
+      server.details['conv-1'] = detail('conv-1', longThread());
+      await openChat(tester, phone: Phone.iphoneSE);
+      setKeyboard(tester, Phone.iphoneSE, Phone.iphoneSE.keyboard);
+      await settle(tester);
+      final long = 'Your card was printed on Monday and posted second class, so allow up to five working days. ' * 5;
+      expect(long.length, greaterThan(420));
+      await arrive(tester, msg('r1', 'agent', long.trim(), at: at(40)));
+      await settle(tester);
+      expect(scroll(tester).offset, 0);
+      expect(find.descendant(of: threadList(), matching: find.text(long.trim())), findsOneWidget);
+    });
+
+    testWidgets('a row that came in live does not play again when scrolled away and back', (tester) async {
+      server.details['conv-1'] = detail('conv-1', longThread());
+      await openChat(tester);
+      const reply = 'Found it: posted on Monday.';
+      await arrive(tester, msg('r1', 'agent', reply, at: at(40)));
+      await settle(tester);
+      scroll(tester).jumpTo(2000);
+      await settle(tester, frames: 2);
+      expect(find.descendant(of: threadList(), matching: find.text(reply)), findsNothing, reason: 'far off screen: no longer built');
+      scroll(tester).jumpTo(0);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(fadeOf(tester, reply), isNull, reason: 'built again, simply there');
+    });
+
+    testWidgets('a reply that came while the reader was up the thread is simply there when they go down to it', (tester) async {
+      server.details['conv-1'] = detail('conv-1', longThread());
+      await openChat(tester);
+      scroll(tester).jumpTo(2000);
+      await settle(tester, frames: 2);
+      const reply = 'Found it: posted on Monday.';
+      await arrive(tester, msg('r1', 'agent', reply, at: at(40)));
+      await settle(tester, frames: 3);
+      expect(find.text('New message'), findsOneWidget);
+      await tester.tap(find.text('New message'));
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        final fade = fadeOf(tester, reply);
+        expect(fade == null || fade.opacity.value == 1, isTrue, reason: 'no fade on the way down');
+      }
+    });
+
+    testWidgets('a second reply landing while the thread still glides to the first: no pill, and both in view', (tester) async {
+      server.details['conv-1'] = detail('conv-1', longThread());
+      await openChat(tester);
+      final tall = 'Your card was printed on Monday and posted second class, so allow up to five working days. ' * 3;
+      await arrive(tester, msg('r1', 'agent', tall.trim(), at: at(40)));
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(scroll(tester).offset, greaterThan(120), reason: 'still on its way down');
+      await arrive(tester, msg('r2', 'agent', 'And here is the tracking number.', at: at(41)));
+      expect(find.text('New message'), findsNothing);
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(find.text('New message'), findsNothing);
+      await settle(tester);
+      expect(find.textContaining('New message'), findsNothing);
+      expect(scroll(tester).offset, 0);
+      final view = tester.getRect(threadList());
+      expect(tester.getRect(find.text('And here is the tracking number.')).bottom, lessThanOrEqualTo(view.bottom));
+    });
+
+    testWidgets('a tab and straight back: the one left is never shown whole over it', (tester) async {
+      usePhone(tester, Phone.iphone13);
+      await openMessenger(tester, server, channel);
+      Finder fadeOver(Type tab) => find.descendant(of: find.byType(MessengerTabs), matching: find.ancestor(of: find.byType(tab), matching: find.byType(FadeTransition))).first;
+      await tester.tap(find.text('Messages'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 60));
+      final messagesShown = tester.widget<FadeTransition>(fadeOver(MessagesTab)).opacity.value;
+      expect(messagesShown, inExclusiveRange(0, 1));
+      await tester.tap(find.text('Home'));
+      await tester.pump();
+      // Messages is beneath now, whole; Home over it shows as much of itself as it did.
+      final home = tester.widget<FadeTransition>(fadeOver(HomeTab)).opacity.value;
+      expect(home, closeTo(1 - messagesShown, 0.05), reason: 'Messages stays as faint as it was');
+      await settle(tester, frames: 4);
+      expect(find.byType(MessagesTab), findsNothing);
+      expect(tester.widget<FadeTransition>(fadeOver(HomeTab)).opacity.value, 1);
+    });
+
+    testWidgets('a hidden tab takes no focus: the help search lets go when the customer leaves Help', (tester) async {
+      usePhone(tester, Phone.iphone13);
+      server.articles = <Map<String, dynamic>>[<String, dynamic>{'slug': 'renew-sia', 'title': 'How do I renew my SIA licence?', 'description': null}];
+      await openMessenger(tester, server, channel);
+      await tester.tap(find.text('Help').last);
+      await settle(tester, frames: 4);
+      final field = find.descendant(of: find.byType(HelpTab), matching: find.byType(EditableText));
+      await tester.tap(field);
+      await tester.pump();
+      final node = tester.widget<EditableText>(field).focusNode;
+      expect(node.hasFocus, isTrue);
+      await tester.tap(find.text('Home'));
+      await settle(tester, frames: 4);
+      expect(node.hasFocus, isFalse);
+      expect(node.canRequestFocus, isFalse, reason: 'nothing hidden takes focus');
+    });
+  });
 }
 
 /// A connection whose answers wait for [gate]: the message on its way is

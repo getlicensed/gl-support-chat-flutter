@@ -110,7 +110,8 @@ class _MessengerTabsState extends State<MessengerTabs> {
 /// in Help, the list's place), with a short cross-fade instead of a cut: the
 /// tab coming in fades in over the one going, which stays whole beneath it
 /// until it is covered, so nothing flashes white between them. At once on a
-/// phone that asks for less motion.
+/// phone that asks for less motion. As in an IndexedStack, a tab not shown
+/// takes no focus: a search left typed in Help lets the keyboard go.
 class _TabStack extends StatefulWidget {
   const _TabStack({required this.index, required this.children});
   final int index;
@@ -125,8 +126,6 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
     ..addStatusListener((status) {
       if (status == AnimationStatus.completed && _leaving != null && mounted) setState(() => _leaving = null);
     });
-  late final Animation<double> _in = CurvedAnimation(parent: _fade, curve: Curves.easeOut);
-
   /// The tab going, drawn under the new one while it fades in.
   int? _leaving;
 
@@ -139,8 +138,19 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
       _fade.value = 1;
       return;
     }
-    _leaving = old.index;
-    _fade.forward(from: 0);
+    // Linear, so a fade cut short can be picked up exactly where it was.
+    final shown = _fade.value;
+    final midway = _leaving != null && shown < 1;
+    if (midway && widget.index == _leaving) {
+      // Straight back before the fade ended: the tab left goes beneath, as
+      // faint as it was seen, and this one comes in from as much as showed.
+      _leaving = old.index;
+      _fade.forward(from: 1 - shown);
+    } else {
+      // From a fade cut short to a third tab: the one more in view stays beneath.
+      if (!midway || shown >= 0.5) _leaving = old.index;
+      _fade.forward(from: 0);
+    }
   }
 
   @override
@@ -171,13 +181,16 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
               offstage: i != current && i != leaving,
               child: TickerMode(
                 enabled: i == current || i == leaving,
-                child: IgnorePointer(
-                  ignoring: i != current,
-                  child: FadeTransition(
-                    opacity: i == current ? _in : kAlwaysCompleteAnimation,
-                    // Messages and Help have no background of their own: white,
-                    // so the tab beneath does not show through once faded in.
-                    child: ColoredBox(color: Colors.white, child: widget.children[i]),
+                child: ExcludeFocus(
+                  excluding: i != current,
+                  child: IgnorePointer(
+                    ignoring: i != current,
+                    child: FadeTransition(
+                      opacity: i == current ? _fade : kAlwaysCompleteAnimation,
+                      // Messages and Help have no background of their own: white,
+                      // so the tab beneath does not show through once faded in.
+                      child: ColoredBox(color: Colors.white, child: widget.children[i]),
+                    ),
                   ),
                 ),
               ),

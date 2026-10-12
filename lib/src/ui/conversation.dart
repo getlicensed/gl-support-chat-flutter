@@ -256,8 +256,10 @@ class _Rows {
   final list = <Widget>[];
   final _used = <String>{};
 
-  /// [arriving]: the row is a message that came in live, not yet drawn.
-  void add(String key, Widget row, {bool arriving = false}) {
+  /// [message]: the row is that message's (a [ChatMessage] or an
+  /// [OutgoingMessage]); it fades in if the message came in live and has
+  /// not been drawn yet.
+  void add(String key, Widget row, {Object? message}) {
     // Two rows never share a key, even if the server ever sent an id twice.
     var k = key;
     for (var n = 2; !_used.add(k); n++) {
@@ -265,7 +267,7 @@ class _Rows {
     }
     // Every row is wrapped the same way, arriving or not: the row keeps its
     // place in the tree, and its state, from one build to the next.
-    list.add(KeyedSubtree(key: ValueKey<String>(k), child: _Entrance(arriving: arriving && motion, child: row)));
+    list.add(KeyedSubtree(key: ValueKey<String>(k), child: _Entrance(message: motion ? message : null, child: row)));
   }
 }
 
@@ -312,7 +314,7 @@ List<Widget> _liveRows(BuildContext context, MessengerController c) {
   final notice = c.flowNotice;
   if (notice != null) rows.add('notice', _ErrorLine(notice));
   for (final out in c.outgoing) {
-    rows.add('out:${out.localId}', _OutgoingBubble(out: out), arriving: c.isArriving(out));
+    rows.add('out:${out.localId}', _OutgoingBubble(out: out), message: out);
   }
   return rows.list;
 }
@@ -330,8 +332,6 @@ List<Widget> _messageRows(
   final label = c.session?.productLabel ?? '';
   for (var i = 0; i < messages.length; i++) {
     final m = messages[i];
-    // Its name, bubble and buttons come in together.
-    final arriving = c.isArriving(m);
     if (i == divider) rows.add('divider', const _NewMessagesDivider());
     if (!m.fromVisitor) {
       final prev = i == 0 ? null : messages[i - 1];
@@ -346,7 +346,7 @@ List<Widget> _messageRows(
           },
           time: m.createdAt,
           authorId: m.authorId,
-        ), arriving: arriving);
+        ), message: m);
       }
     }
     final meta = m.meta;
@@ -356,15 +356,15 @@ List<Widget> _messageRows(
       rows.add('msg:${m.id}', _Bubble(
         message: m,
         seen: m.fromVisitor && agentSeenAt != null && !m.createdAt.isAfter(agentSeenAt),
-      ), arriving: arriving);
+      ), message: m);
     }
     final csat = meta?.csatRatingId;
-    if (m.authorType == 'bot' && csat != null) rows.add('csat:${m.id}', CsatCard(ratingId: csat, title: 'Tap a face'), arriving: arriving);
+    if (m.authorType == 'bot' && csat != null) rows.add('csat:${m.id}', CsatCard(ratingId: csat, title: 'Tap a face'), message: m);
     if (livePrompt != null && identical(m, livePrompt)) {
       if (meta!.buttons.isNotEmpty) {
-        rows.add('buttons:${m.id}', _FlowButtons(buttons: meta.buttons, onTap: (b) => c.choose(m, b)), arriving: arriving);
+        rows.add('buttons:${m.id}', _FlowButtons(buttons: meta.buttons, onTap: (b) => c.choose(m, b)), message: m);
       } else if (meta.collect != null) {
-        rows.add('collect:${m.id}', _CollectBox(prompt: m, request: meta.collect!), arriving: arriving);
+        rows.add('collect:${m.id}', _CollectBox(prompt: m, request: meta.collect!), message: m);
       }
     }
   }
@@ -428,7 +428,11 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   /// How far from the latest still counts as reading it, in logical pixels.
   static const _near = 120.0;
 
-  bool get _atLatest => !_scroll.hasClients || _scroll.offset <= _near;
+  /// [_toLatest] is on its way down: a reply landing meanwhile is one at
+  /// the latest, not one for a reader up the thread.
+  bool _goingDown = false;
+
+  bool get _atLatest => !_scroll.hasClients || _goingDown || _scroll.offset <= _near;
 
   @override
   void initState() {
@@ -570,7 +574,9 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
       if (from > _scroll.position.viewportDimension * 2 || MediaQuery.disableAnimationsOf(context)) {
         _scroll.jumpTo(0);
       } else {
-        _scroll.animateTo(0, duration: const Duration(milliseconds: 250), curve: Curves.easeOutCubic);
+        _goingDown = true;
+        // Done, or stopped by the reader's finger.
+        _scroll.animateTo(0, duration: const Duration(milliseconds: 250), curve: Curves.easeOutCubic).whenComplete(() => _goingDown = false);
       }
     });
   }
@@ -606,7 +612,8 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
     // with it the reader's place.
     return Stack(
       children: [
-        Positioned.fill(child: _Shifted(thread: this, child: list)),
+        // Its own layer: the easing repaints the thread, not the header and composer.
+        Positioned.fill(child: RepaintBoundary(child: _Shifted(thread: this, child: list))),
         if (_unseen > 0)
           Positioned(
             left: 0,
@@ -736,10 +743,29 @@ class _Slot extends StatefulWidget {
 }
 
 class _SlotState extends State<_Slot> {
+  /// In the tree. The list lets go of a row it no longer lays out (pushed
+  /// out of range by taller rows) in the middle of a layout, a while before
+  /// disposing it; it has no place to ask for then.
+  bool _active = true;
+
   @override
   void initState() {
     super.initState();
     widget.slots[widget.key!] = this;
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    _active = true;
+    widget.slots[widget.key!] = this;
+  }
+
+  @override
+  void deactivate() {
+    _active = false;
+    if (identical(widget.slots[widget.key!], this)) widget.slots.remove(widget.key!);
+    super.deactivate();
   }
 
   @override
@@ -751,6 +777,7 @@ class _SlotState extends State<_Slot> {
   /// Where the row is laid out along the thread (0 at the latest), or null
   /// while it is not laid out.
   double? get layoutOffset {
+    if (!_active || !mounted) return null;
     RenderObject? r = context.findRenderObject();
     while (r != null) {
       final data = r.parentData;
@@ -1415,13 +1442,19 @@ class _ErrorLine extends StatelessWidget {
 
 /// A row of the thread. One that has just come in live fades in with a
 /// small rise, as in Intercom; every other row (history, a reopen, a
-/// catch-up) is simply there. Decided once, when the row is first built: a
-/// rebuild, a scroll back to it, or the same message under a new key (an AI
-/// answer taking its real id) never plays it again. Opacity and a
+/// catch-up) is simply there. Decided once, when the row is first built, by
+/// asking the controller then — not by what the row was given at the last
+/// build, which may be from before its message was drawn: a rebuild, a
+/// scroll back to it, a reply first reached from up the thread, or the same
+/// message under a new key (an AI answer taking its real id) never plays
+/// it. Its name, bubble and buttons come in together. Opacity and a
 /// translation only: nothing is laid out again while it plays.
 class _Entrance extends StatefulWidget {
-  const _Entrance({required this.arriving, required this.child});
-  final bool arriving;
+  const _Entrance({required this.message, required this.child});
+
+  /// The row's message; null for a row that is no message's, or when the
+  /// phone asks for less motion.
+  final Object? message;
   final Widget child;
 
   static const time = Duration(milliseconds: 200);
@@ -1440,7 +1473,9 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
   @override
   void initState() {
     super.initState();
-    if (!widget.arriving) return;
+    final message = widget.message;
+    final c = context.getInheritedWidgetOfExactType<MessengerScope>()?.controller;
+    if (message == null || c == null || !c.isArriving(message)) return;
     final a = AnimationController(vsync: this, duration: _Entrance.time)..forward();
     _in = a;
     _t = CurvedAnimation(parent: a, curve: Curves.easeOutCubic);
@@ -1527,12 +1562,8 @@ class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderState
   }
 
   /// Motion is allowed and the reader is at (or near) the latest, where the
-  /// row is in view. The list is reversed: the latest is at 0.
-  bool get _animate {
-    if (!widget.motion) return false;
-    final p = context.findAncestorStateOfType<ScrollableState>()?.position;
-    return p == null || !p.hasPixels || p.pixels <= _ThreadState._near;
-  }
+  /// row is in view — or on the way there.
+  bool get _animate => widget.motion && (context.findAncestorStateOfType<_ThreadState>()?._atLatest ?? true);
 
   @override
   void didUpdateWidget(_TypingSlot old) {
