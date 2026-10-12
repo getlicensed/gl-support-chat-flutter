@@ -78,6 +78,7 @@ class MessengerSession {
     required this.brandColor,
     required this.productLabel,
     this.logoUrl,
+    this.avatarUrl,
     this.welcomeGreeting,
     this.welcomeSubtitle,
     this.identified = false,
@@ -96,7 +97,14 @@ class MessengerSession {
 
   /// The chatbot's name (else the organisation's): the bot's name, the header.
   final String productLabel;
+
+  /// The logo: Home's band, and the chatbot's circle when it has no [avatarUrl].
   final String? logoUrl;
+
+  /// The chatbot's chat avatar (Design → Chat avatar, since 12 Oct): a
+  /// square picture that fills the chatbot's circle in the chat. Null when
+  /// none is set, or from an older server: the circle shows the logo then.
+  final String? avatarUrl;
   final String? welcomeGreeting;
   final String? welcomeSubtitle;
 
@@ -128,12 +136,15 @@ class MessengerSession {
         .take(4)
         .toList();
     final logo = _str(j['logoUrl']);
+    final avatar = _str(j['avatarUrl']);
     return MessengerSession(
       token: _text(j['token']),
       visitorId: _text(j['visitorId']),
       brandColor: _str(j['brandColor']) ?? '#6366F1',
       productLabel: (_str(j['productName']) ?? '').isNotEmpty ? _text(j['productName']) : _text(j['orgName']),
       logoUrl: logo != null && RegExp(r'^https?://', caseSensitive: false).hasMatch(logo) ? logo : null,
+      // https only: a phone refuses a plain http picture anyway.
+      avatarUrl: avatar != null && RegExp(r'^https://', caseSensitive: false).hasMatch(avatar) ? avatar : null,
       welcomeGreeting: _str(j['welcomeGreeting']),
       welcomeSubtitle: _str(j['welcomeSubtitle']),
       identified: j['identified'] is Map,

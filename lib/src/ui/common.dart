@@ -197,18 +197,21 @@ class InitialAvatar extends StatelessWidget {
   final double size;
   final IconData? icon;
 
+  /// The letter alone, for a circle that is already the brand colour.
+  static Widget letter(BrandColors brand, String label, double size) {
+    final initial = label.trim().isEmpty ? 'S' : label.trim().characters.first.toUpperCase();
+    return Text(initial, style: TextStyle(color: brand.onPrimary, fontSize: size * 0.42, fontWeight: FontWeight.w700));
+  }
+
   @override
   Widget build(BuildContext context) {
     final brand = context.brand;
-    final initial = label.trim().isEmpty ? 'S' : label.trim().characters.first.toUpperCase();
     return Container(
       width: size,
       height: size,
       alignment: Alignment.center,
       decoration: BoxDecoration(color: brand.primary, shape: BoxShape.circle),
-      child: icon != null
-          ? Icon(icon, size: size * 0.55, color: brand.onPrimary)
-          : Text(initial, style: TextStyle(color: brand.onPrimary, fontSize: size * 0.42, fontWeight: FontWeight.w700)),
+      child: icon != null ? Icon(icon, size: size * 0.55, color: brand.onPrimary) : letter(brand, label, size),
     );
   }
 }
@@ -243,9 +246,12 @@ class PersonAvatar extends StatelessWidget {
   }
 }
 
-/// The chatbot's logo in a circle — on white, whole whatever its shape — for
-/// the bot's messages and the chat header, as Intercom shows the brand beside
-/// the bot. No logo, or one that does not load: the initial.
+/// The chatbot's circle, as Intercom shows the brand beside the bot: beside
+/// the bot's messages and its typing, and in the chat header when nobody's
+/// face is shown there. The chat avatar fills it. Without one, the logo,
+/// whole whatever its shape, on the brand colour: on the white of 0.4.2,
+/// GL's white logo vanished. No logo either, or nothing that loads: the
+/// initial. The website messenger draws it the same way.
 class LogoAvatar extends StatelessWidget {
   const LogoAvatar({super.key, required this.label, this.size = 28});
 
@@ -254,21 +260,38 @@ class LogoAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final fallback = InitialAvatar(label: label, size: size);
-    final logo = context.messenger.session?.logoUrl;
-    if (logo == null) return fallback;
-    return Container(
+    final brand = context.brand;
+    final session = context.messenger.session;
+    final logo = session?.logoUrl;
+    final onBrand = Container(
       width: size,
       height: size,
-      padding: EdgeInsets.all(size * 0.12),
-      decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
-      child: ClipOval(
-        child: Image.network(
-          logo,
-          fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) => fallback,
-          frameBuilder: (_, child, frame, sync) => frame == null && !sync ? fallback : child,
-        ),
+      alignment: Alignment.center,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(color: brand.primary, shape: BoxShape.circle),
+      child: logo == null
+          ? InitialAvatar.letter(brand, label, size)
+          : Padding(
+              padding: EdgeInsets.all(size * 0.12),
+              child: Image.network(
+                logo,
+                fit: BoxFit.contain,
+                // Already on the brand colour: the letter alone, never a broken image.
+                errorBuilder: (_, __, ___) => Center(child: InitialAvatar.letter(brand, label, size)),
+                frameBuilder: (_, child, frame, sync) => frame == null && !sync ? Center(child: InitialAvatar.letter(brand, label, size)) : child,
+              ),
+            ),
+    );
+    final avatar = session?.avatarUrl;
+    if (avatar == null) return onBrand;
+    return ClipOval(
+      child: Image.network(
+        avatar,
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => onBrand,
+        frameBuilder: (_, child, frame, sync) => frame == null && !sync ? onBrand : child,
       ),
     );
   }
