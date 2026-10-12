@@ -139,6 +139,28 @@ class MessengerController extends ChangeNotifier {
   String? sendError;
   bool viewingLive = false;
 
+  /// Messages that came in live — over the connection, or sent by the
+  /// customer just now — and are not drawn yet: the thread lets them in with
+  /// a short fade. What a fetch brings (history, a reopen, a catch-up) is
+  /// never here, so it is simply there. The screen settles them once drawn.
+  final Set<Object> _arriving = Set<Object>.identity();
+
+  /// [message] (a [ChatMessage] or an [OutgoingMessage]) came in live and
+  /// has not been drawn yet.
+  bool isArriving(Object message) => _arriving.contains(message);
+
+  /// The messages arriving now, to settle once they are drawn.
+  List<Object> get arriving => List<Object>.of(_arriving);
+
+  /// Drawn, or never to be: no longer arriving. Without [these], all.
+  void settleArrivals([Iterable<Object>? these]) {
+    if (these == null) {
+      _arriving.clear();
+    } else {
+      _arriving.removeAll(these);
+    }
+  }
+
   /// What the customer has typed and not sent ([composerChanged] keeps it),
   /// there again at the next open; dropped with everything else when
   /// someone else signs in.
@@ -503,6 +525,7 @@ class MessengerController extends ChangeNotifier {
     flowNotice = null;
     collectError = null;
     typingAuthor = null;
+    _arriving.clear();
     sendError = null;
     // The screen that showed the customer before goes in a moment; until
     // then nothing that arrives for the next one counts as read.
@@ -531,6 +554,7 @@ class MessengerController extends ChangeNotifier {
     _stopVisitorTyping();
     _agentTypingTimer?.cancel();
     typingAuthor = null;
+    _arriving.clear(); // the next open shows them as they are
     _settleStream();
     _closeWhenIdle();
   }
@@ -789,6 +813,9 @@ class MessengerController extends ChangeNotifier {
         dividerIndex = live.length;
       }
     }
+    // It comes in with a fade — unless it is the server's copy of a bubble
+    // already on screen, which simply takes that bubble's place.
+    if (!msg.fromVisitor || !outgoing.any((o) => _isCopyOf(msg, o))) _arriving.add(msg);
     live.add(msg);
     _arrivedAfterAll(msg);
     _notify();
@@ -856,14 +883,16 @@ class MessengerController extends ChangeNotifier {
     typingAuthor = null;
     _agentTypingTimer?.cancel();
     liveId ??= data['conversationId'] as String?;
-    live.add(ChatMessage(
+    final answer = ChatMessage(
       id: id,
       conversationId: liveId ?? '',
       body: '',
       authorType: 'ai',
       authorName: (data['authorName'] as String?) ?? 'AI',
       createdAt: DateTime.tryParse('${data['createdAt']}')?.toLocal() ?? _now(),
-    ));
+    );
+    live.add(answer);
+    _arriving.add(answer);
     _streamId = id;
     _streamBuffer = '';
     _streamFinalId = null;
@@ -993,6 +1022,7 @@ class MessengerController extends ChangeNotifier {
       imageType: imageType,
     );
     outgoing.add(out);
+    _arriving.add(out);
     return _enqueue(out);
   }
 

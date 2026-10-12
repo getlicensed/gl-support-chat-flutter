@@ -47,6 +47,8 @@ class _ConversationPageState extends State<ConversationPage> {
     _controller = c;
     _resets = c.resets;
     if (_live) {
+      // What came in before this opened is simply there, not faded in.
+      c.settleArrivals();
       // After this frame: the controller notifies, and the tree is building.
       WidgetsBinding.instance.addPostFrameCallback((_) => c.setViewingLive(true));
     } else {
@@ -95,9 +97,14 @@ class _ConversationPageState extends State<ConversationPage> {
     final room = MediaQuery.sizeOf(context).height - keyboard;
     final cramped = keyboard > 0 && room < 600;
     final tight = keyboard > 0 && room < 300;
+    final motion = !MediaQuery.disableAnimationsOf(context);
     final Widget thread;
     if (_live) {
       _handOverPhotos(c);
+      // What came in live is drawn this frame, faded in. After it, it is no
+      // longer arriving: a rebuild, or a scroll back to it, shows it as it is.
+      final drawn = c.arriving;
+      if (drawn.isNotEmpty) WidgetsBinding.instance.addPostFrameCallback((_) => c.settleArrivals(drawn));
       var mine = c.outgoing.length;
       for (final m in c.live) {
         if (m.fromVisitor) mine++;
@@ -106,7 +113,12 @@ class _ConversationPageState extends State<ConversationPage> {
       // spinner until it is, never the opening chips flashing before it.
       thread = !c.liveLoaded && c.live.isEmpty && c.outgoing.isEmpty
           ? const Center(child: CircularProgressIndicator())
-          : _Thread(rows: _liveRows(context, c), sent: mine, received: c.live.length + c.outgoing.length - mine);
+          : _Thread(
+              rows: _liveRows(context, c),
+              sent: mine,
+              received: c.live.length + c.outgoing.length - mine,
+              glide: motion && drawn.isNotEmpty,
+            );
     } else {
       thread = FutureBuilder<ConversationDetail>(
         future: _past,
@@ -237,21 +249,28 @@ class _GoneOnResetState extends State<_GoneOnReset> {
 /// local id of one on its way), so a row keeps its state — a photo already
 /// fetched — when rows are added below it, instead of taking another row's.
 class _Rows {
+  _Rows({this.motion = false});
+
+  /// The phone has not asked for less motion: rows that came in live fade in.
+  final bool motion;
   final list = <Widget>[];
   final _used = <String>{};
 
-  void add(String key, Widget row) {
+  /// [arriving]: the row is a message that came in live, not yet drawn.
+  void add(String key, Widget row, {bool arriving = false}) {
     // Two rows never share a key, even if the server ever sent an id twice.
     var k = key;
     for (var n = 2; !_used.add(k); n++) {
       k = '$key#$n';
     }
-    list.add(KeyedSubtree(key: ValueKey<String>(k), child: row));
+    // Every row is wrapped the same way, arriving or not: the row keeps its
+    // place in the tree, and its state, from one build to the next.
+    list.add(KeyedSubtree(key: ValueKey<String>(k), child: _Entrance(arriving: arriving && motion, child: row)));
   }
 }
 
 List<Widget> _liveRows(BuildContext context, MessengerController c) {
-  final rows = _Rows();
+  final rows = _Rows(motion: !MediaQuery.disableAnimationsOf(context));
   final label = c.session?.productLabel ?? '';
   if (c.live.isEmpty) {
     final pendingCsat = c.pendingCsatRatingId;
@@ -277,19 +296,23 @@ List<Widget> _liveRows(BuildContext context, MessengerController c) {
         }
       }
     } else if (c.typingAuthor != null) {
-      rows.add('typing', _TypingRow(author: c.typingAuthor!));
+      rows.add('typing', _TypingSlot(author: c.typingAuthor, replies: 0, motion: rows.motion));
     } else {
       rows.add('intro', const _IntroAndChips());
     }
   } else {
     _messageRows(context, c, c.live, agentSeenAt: c.agentSeenAt, divider: c.dividerIndex, livePrompt: c.livePrompt, into: rows);
-    final typing = c.typingAuthor;
-    if (typing != null) rows.add('typing', _TypingRow(author: typing));
+    // Always there, empty while nobody types: it opens and closes in place.
+    var replies = 0;
+    for (final m in c.live) {
+      if (!m.fromVisitor) replies++;
+    }
+    rows.add('typing', _TypingSlot(author: c.typingAuthor, replies: replies, motion: rows.motion));
   }
   final notice = c.flowNotice;
   if (notice != null) rows.add('notice', _ErrorLine(notice));
   for (final out in c.outgoing) {
-    rows.add('out:${out.localId}', _OutgoingBubble(out: out));
+    rows.add('out:${out.localId}', _OutgoingBubble(out: out), arriving: c.isArriving(out));
   }
   return rows.list;
 }
@@ -307,6 +330,8 @@ List<Widget> _messageRows(
   final label = c.session?.productLabel ?? '';
   for (var i = 0; i < messages.length; i++) {
     final m = messages[i];
+    // Its name, bubble and buttons come in together.
+    final arriving = c.isArriving(m);
     if (i == divider) rows.add('divider', const _NewMessagesDivider());
     if (!m.fromVisitor) {
       final prev = i == 0 ? null : messages[i - 1];
@@ -321,7 +346,7 @@ List<Widget> _messageRows(
           },
           time: m.createdAt,
           authorId: m.authorId,
-        ));
+        ), arriving: arriving);
       }
     }
     final meta = m.meta;
@@ -331,15 +356,15 @@ List<Widget> _messageRows(
       rows.add('msg:${m.id}', _Bubble(
         message: m,
         seen: m.fromVisitor && agentSeenAt != null && !m.createdAt.isAfter(agentSeenAt),
-      ));
+      ), arriving: arriving);
     }
     final csat = meta?.csatRatingId;
-    if (m.authorType == 'bot' && csat != null) rows.add('csat:${m.id}', CsatCard(ratingId: csat, title: 'Tap a face'));
+    if (m.authorType == 'bot' && csat != null) rows.add('csat:${m.id}', CsatCard(ratingId: csat, title: 'Tap a face'), arriving: arriving);
     if (livePrompt != null && identical(m, livePrompt)) {
       if (meta!.buttons.isNotEmpty) {
-        rows.add('buttons:${m.id}', _FlowButtons(buttons: meta.buttons, onTap: (b) => c.choose(m, b)));
+        rows.add('buttons:${m.id}', _FlowButtons(buttons: meta.buttons, onTap: (b) => c.choose(m, b)), arriving: arriving);
       } else if (meta.collect != null) {
-        rows.add('collect:${m.id}', _CollectBox(prompt: m, request: meta.collect!));
+        rows.add('collect:${m.id}', _CollectBox(prompt: m, request: meta.collect!), arriving: arriving);
       }
     }
   }
@@ -353,9 +378,16 @@ List<Widget> _messageRows(
 /// only for a reader already at (or near) the latest; one reading further up
 /// stays exactly where they are, with a "New message" pill that takes them
 /// down. A drag or a tap on the thread puts the keyboard away.
+///
+/// At the latest, rows that come in live do not push the thread up in one
+/// jump: what is on screen stays put for a frame, then glides up as they
+/// come in below ([glide]).
 class _Thread extends StatefulWidget {
-  const _Thread({required this.rows, this.sent = 0, this.received = 0});
+  const _Thread({required this.rows, this.sent = 0, this.received = 0, this.glide = false});
   final List<Widget> rows;
+
+  /// Some of the rows came in live (and the phone allows motion).
+  final bool glide;
 
   /// The customer's own messages, sent or on their way.
   final int sent;
@@ -367,7 +399,7 @@ class _Thread extends StatefulWidget {
   State<_Thread> createState() => _ThreadState();
 }
 
-class _ThreadState extends State<_Thread> {
+class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   final _scroll = ScrollController();
   late final _physics = _KeepPlace(this);
 
@@ -377,6 +409,18 @@ class _ThreadState extends State<_Thread> {
   /// A row on screen before an update, and how far it sat above the bottom
   /// of the view: for the one layout that follows.
   ({Key key, double above})? _anchor;
+
+  /// The [_anchor] is a glide's, not yet drawn: what scrolling could not
+  /// keep of it is drawn as a shift ([_paintShift]).
+  bool _gliding = false;
+
+  /// What scrolling could not keep in a glide (a thread shorter than the
+  /// screen does not scroll): the rows are drawn this much lower, then eased
+  /// up into place. Drawn only: nothing is laid out again.
+  double _shiftFrom = 0;
+  bool _shiftWaiting = false;
+  late final AnimationController _ease = AnimationController(vsync: this, duration: const Duration(milliseconds: 250), value: 1);
+  _RenderShifted? _shifted;
 
   /// Replies that arrived while the reader was up the thread.
   int _unseen = 0;
@@ -395,6 +439,7 @@ class _ThreadState extends State<_Thread> {
   @override
   void dispose() {
     _scroll.dispose();
+    _ease.dispose();
     super.dispose();
   }
 
@@ -405,7 +450,21 @@ class _ThreadState extends State<_Thread> {
   @override
   void didUpdateWidget(_Thread old) {
     super.didUpdateWidget(old);
-    if (!_atLatest) _holdPlace();
+    if (!_atLatest) {
+      _holdPlace(widget.rows);
+    } else if (widget.glide && (widget.sent > old.sent || widget.received > old.received)) {
+      // At the latest, with rows coming in live: those on screen stay where
+      // they are in this layout, the new ones below them, out of view; then
+      // [_toLatest] glides down to them.
+      _holdPlace(widget.rows, before: old.rows);
+      if (_anchor != null) {
+        _gliding = true;
+        // The list is its own repaint boundary: ask for the paint that
+        // measures what scrolling kept.
+        _shifted?.markNeedsPaint();
+        WidgetsBinding.instance.addPostFrameCallback((_) => _gliding = false);
+      }
+    }
     if (widget.sent > old.sent) {
       _unseen = 0;
       _toLatest();
@@ -424,12 +483,32 @@ class _ThreadState extends State<_Thread> {
   /// answer typing out below would push them up). So: note a row on screen
   /// now, and in the layout that follows set the scroll offset so that it is
   /// where it was ([_KeepPlace]).
-  void _holdPlace() {
+  ///
+  /// The row is one that is still among [rows]. With [before] (the rows
+  /// before the update) it is also above every new row: the new rows then
+  /// come in below it.
+  void _holdPlace(List<Widget> rows, {List<Widget>? before}) {
     if (!_scroll.hasClients) return;
+    final index = <Key, int>{
+      for (var i = 0; i < rows.length; i++)
+        if (rows[i].key != null) rows[i].key!: i,
+    };
+    var limit = rows.length;
+    if (before != null) {
+      final had = <Key?>{for (final r in before) r.key};
+      for (var i = 0; i < rows.length; i++) {
+        if (!had.contains(rows[i].key)) {
+          limit = i;
+          break;
+        }
+      }
+    }
     final pixels = _scroll.position.pixels;
     final view = _scroll.position.viewportDimension;
     ({Key key, double above})? found;
     for (final slot in _slots.values) {
+      final i = index[slot.widget.key];
+      if (i == null || i >= limit) continue;
       final at = slot.layoutOffset;
       if (at == null || at < pixels || at > pixels + view) continue;
       if (found == null || at - pixels < found.above) found = (key: slot.widget.key!, above: at - pixels);
@@ -452,15 +531,43 @@ class _ThreadState extends State<_Thread> {
     return kept;
   }
 
+  /// The shift the list is drawn with now.
+  double get _shift => _shiftWaiting ? _shiftFrom : _shiftFrom * (1 - Curves.easeOutCubic.transform(_ease.value));
+
+  /// At each paint of the list. In a glide's first paint, the rows on screen
+  /// that scrolling could not keep in place are drawn where they were, and
+  /// then eased up along with the rest.
+  double _paintShift() {
+    final anchor = _anchor;
+    if (_gliding && anchor != null && _scroll.hasClients) {
+      _gliding = false;
+      final at = _slots[anchor.key]?.layoutOffset;
+      // How far the row moved up the screen in this layout.
+      final moved = at == null ? 0.0 : at - _scroll.position.pixels - anchor.above;
+      if (moved > 0.5) {
+        _shiftFrom = _shift + moved;
+        _shiftWaiting = true;
+        // Not while painting: the next frame starts the ease.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _shiftWaiting = false;
+          _ease.forward(from: 0);
+        });
+      }
+    }
+    return _shift;
+  }
+
   /// Once the new rows are laid out: down to the latest (the list is
   /// reversed, so that is offset 0). A short way is animated; from far up
-  /// it jumps, rather than scroll through the whole history.
+  /// it jumps, rather than scroll through the whole history, and so it does
+  /// on a phone that asks for less motion.
   void _toLatest() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       final from = _scroll.offset;
       if (from <= 0) return;
-      if (from > _scroll.position.viewportDimension * 2) {
+      if (from > _scroll.position.viewportDimension * 2 || MediaQuery.disableAnimationsOf(context)) {
         _scroll.jumpTo(0);
       } else {
         _scroll.animateTo(0, duration: const Duration(milliseconds: 250), curve: Curves.easeOutCubic);
@@ -499,7 +606,7 @@ class _ThreadState extends State<_Thread> {
     // with it the reader's place.
     return Stack(
       children: [
-        Positioned.fill(child: list),
+        Positioned.fill(child: _Shifted(thread: this, child: list)),
         if (_unseen > 0)
           Positioned(
             left: 0,
@@ -517,6 +624,77 @@ class _ThreadState extends State<_Thread> {
           ),
       ],
     );
+  }
+}
+
+/// Draws the thread [_ThreadState._paintShift] lower, inside its own box, and
+/// takes taps where it is drawn. A paint offset, not a layout.
+class _Shifted extends SingleChildRenderObjectWidget {
+  const _Shifted({required this.thread, required super.child});
+  final _ThreadState thread;
+
+  @override
+  _RenderShifted createRenderObject(BuildContext context) => _RenderShifted(thread);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderShifted renderObject) {}
+}
+
+class _RenderShifted extends RenderProxyBox {
+  _RenderShifted(this.thread);
+  final _ThreadState thread;
+  final _clip = LayerHandle<ClipRectLayer>();
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    thread._shifted = this;
+    thread._ease.addListener(markNeedsPaint);
+  }
+
+  @override
+  void detach() {
+    thread._ease.removeListener(markNeedsPaint);
+    if (identical(thread._shifted, this)) thread._shifted = null;
+    super.detach();
+  }
+
+  @override
+  void dispose() {
+    _clip.layer = null;
+    super.dispose();
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    final dy = thread._paintShift();
+    final child = this.child;
+    if (child == null) return;
+    if (dy == 0) {
+      _clip.layer = null;
+      context.paintChild(child, offset);
+      return;
+    }
+    _clip.layer = context.pushClipRect(
+      needsCompositing,
+      offset,
+      Offset.zero & size,
+      (context, offset) => context.paintChild(child, offset + Offset(0, dy)),
+      oldLayer: _clip.layer,
+    );
+  }
+
+  @override
+  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) => result.addWithPaintOffset(
+        offset: Offset(0, thread._shift),
+        position: position,
+        hitTest: (result, position) => super.hitTestChildren(result, position: position),
+      );
+
+  @override
+  void applyPaintTransform(RenderBox child, Matrix4 transform) {
+    // Matrix4's translate is spelt differently across Flutter versions.
+    transform.multiply(Matrix4.translationValues(0, thread._shift, 0));
   }
 }
 
@@ -1233,6 +1411,170 @@ class _ErrorLine extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Text(text, style: const TextStyle(fontSize: 12, color: Palette.error)),
       );
+}
+
+/// A row of the thread. One that has just come in live fades in with a
+/// small rise, as in Intercom; every other row (history, a reopen, a
+/// catch-up) is simply there. Decided once, when the row is first built: a
+/// rebuild, a scroll back to it, or the same message under a new key (an AI
+/// answer taking its real id) never plays it again. Opacity and a
+/// translation only: nothing is laid out again while it plays.
+class _Entrance extends StatefulWidget {
+  const _Entrance({required this.arriving, required this.child});
+  final bool arriving;
+  final Widget child;
+
+  static const time = Duration(milliseconds: 200);
+
+  /// How far below its place it starts, in logical pixels.
+  static const rise = 7.0;
+
+  @override
+  State<_Entrance> createState() => _EntranceState();
+}
+
+class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixin {
+  AnimationController? _in;
+  Animation<double>? _t;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.arriving) return;
+    final a = AnimationController(vsync: this, duration: _Entrance.time)..forward();
+    _in = a;
+    _t = CurvedAnimation(parent: a, curve: Curves.easeOutCubic);
+  }
+
+  @override
+  void dispose() {
+    _in?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = _t;
+    if (t == null) return widget.child;
+    return FadeTransition(opacity: t, child: _Rise(t, child: widget.child));
+  }
+}
+
+class _Rise extends AnimatedWidget {
+  const _Rise(Animation<double> t, {required this.child}) : super(listenable: t);
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = (listenable as Animation<double>).value;
+    return Transform.translate(offset: Offset(0, _Entrance.rise * (1 - t)), child: child);
+  }
+}
+
+/// The typing row's place at the foot of the thread. It opens — fades in and
+/// grows — when someone starts typing, and closes the same way when they
+/// stop, after a moment: a teammate's "stopped typing" comes just before
+/// their message. When the reply is here the dots go at once and it takes
+/// their place, so the thread does not shrink and then grow again. For a
+/// reader up the thread, or a phone that asks for less motion, the change
+/// is at once (the thread keeps the reader's place through it).
+class _TypingSlot extends StatefulWidget {
+  const _TypingSlot({required this.author, required this.replies, required this.motion});
+
+  /// Who is typing; null while nobody is.
+  final TypingAuthor? author;
+
+  /// Everyone else's messages so far: one more is the reply.
+  final int replies;
+  final bool motion;
+
+  @override
+  State<_TypingSlot> createState() => _TypingSlotState();
+}
+
+class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderStateMixin {
+  late final AnimationController _open = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 200),
+    // The first 250 ms of closing hold the row as it is: time for the reply.
+    reverseDuration: const Duration(milliseconds: 450),
+  );
+  late final Animation<double> _shown = CurvedAnimation(
+    parent: _open,
+    curve: Curves.easeOutCubic,
+    reverseCurve: const Interval(0, 0.45, curve: Curves.easeOutCubic),
+  );
+
+  /// Who the row shows: kept while it closes.
+  TypingAuthor? _who;
+
+  @override
+  void initState() {
+    super.initState();
+    _who = widget.author;
+    if (_who == null) return;
+    if (widget.motion) {
+      _open.forward();
+    } else {
+      _open.value = 1;
+    }
+  }
+
+  @override
+  void dispose() {
+    _open.dispose();
+    super.dispose();
+  }
+
+  /// Motion is allowed and the reader is at (or near) the latest, where the
+  /// row is in view. The list is reversed: the latest is at 0.
+  bool get _animate {
+    if (!widget.motion) return false;
+    final p = context.findAncestorStateOfType<ScrollableState>()?.position;
+    return p == null || !p.hasPixels || p.pixels <= _ThreadState._near;
+  }
+
+  @override
+  void didUpdateWidget(_TypingSlot old) {
+    super.didUpdateWidget(old);
+    final who = widget.author;
+    if (who != null) {
+      _who = who;
+      if (!_animate) {
+        _open.value = 1;
+      } else if (_open.value < 1 && _open.status != AnimationStatus.forward) {
+        _open.forward();
+      }
+    } else if (_open.value > 0) {
+      if (!_animate || widget.replies > old.replies) {
+        _open.value = 0; // the reply takes its place
+      } else if (_open.status != AnimationStatus.reverse) {
+        _open.reverse();
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final who = _who;
+    final row = who == null ? null : _TypingRow(author: who);
+    return AnimatedBuilder(
+      animation: _open,
+      builder: (_, __) {
+        // Closed: nothing at all, and the dots stop.
+        if (row == null || _open.isDismissed) return const SizedBox.shrink();
+        // SizeTransition's own alignment is spelt differently before and
+        // after Flutter 3.41: the clip and the factor by hand work on both.
+        return ClipRect(
+          child: Align(
+            alignment: Alignment.topCenter,
+            heightFactor: _shown.value.clamp(0.0, 1.0),
+            child: FadeTransition(opacity: _shown, child: row),
+          ),
+        );
+      },
+    );
+  }
 }
 
 /// The dots, beside whoever is typing: the teammate's photo (their initial

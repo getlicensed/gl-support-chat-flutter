@@ -13,7 +13,6 @@ import 'device.dart';
 import 'fallback.dart';
 import 'links.dart';
 import 'messenger_page.dart';
-import 'ui/common.dart';
 
 /// Something worth recording happened. Forward it to Crashlytics, Sentry or
 /// your logs, so "support did not open" is a number you can see rather than
@@ -432,15 +431,7 @@ class GLSupportChat {
     }
     final requests = MessengerRequests();
     final page = GLSupportChatPage(controller: controller, screen: screen, fallback: _fallback, browserUrl: browserUrl, requests: requests);
-    final route = PageRouteBuilder<void>(
-      settings: const RouteSettings(name: messengerRoutePrefix),
-      pageBuilder: (_, __, ___) => page,
-      transitionsBuilder: (_, animation, __, child) => SlideTransition(
-        position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
-            .animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
-        child: child,
-      ),
-    );
+    final route = messengerRoute(page, reduceMotion: MediaQuery.maybeDisableAnimationsOf(context) ?? false);
     final closed = Completer<void>();
     if (controller != null) {
       _shown = closed.future;

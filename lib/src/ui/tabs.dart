@@ -51,7 +51,7 @@ class _MessengerTabsState extends State<MessengerTabs> {
     final brand = c.brand;
     return Scaffold(
       backgroundColor: Colors.white,
-      body: IndexedStack(
+      body: _TabStack(
         index: _tab,
         children: [
           HomeTab(onSearch: () => _go(2, focusSearch: true), onMessages: () => _go(1)),
@@ -102,6 +102,88 @@ class _MessengerTabsState extends State<MessengerTabs> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The tabs, each kept alive as an IndexedStack keeps them (a search typed
+/// in Help, the list's place), with a short cross-fade instead of a cut: the
+/// tab coming in fades in over the one going, which stays whole beneath it
+/// until it is covered, so nothing flashes white between them. At once on a
+/// phone that asks for less motion.
+class _TabStack extends StatefulWidget {
+  const _TabStack({required this.index, required this.children});
+  final int index;
+  final List<Widget> children;
+
+  @override
+  State<_TabStack> createState() => _TabStackState();
+}
+
+class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixin {
+  late final AnimationController _fade = AnimationController(vsync: this, duration: const Duration(milliseconds: 150), value: 1)
+    ..addStatusListener((status) {
+      if (status == AnimationStatus.completed && _leaving != null && mounted) setState(() => _leaving = null);
+    });
+  late final Animation<double> _in = CurvedAnimation(parent: _fade, curve: Curves.easeOut);
+
+  /// The tab going, drawn under the new one while it fades in.
+  int? _leaving;
+
+  @override
+  void didUpdateWidget(_TabStack old) {
+    super.didUpdateWidget(old);
+    if (old.index == widget.index) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _leaving = null;
+      _fade.value = 1;
+      return;
+    }
+    _leaving = old.index;
+    _fade.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _fade.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = widget.children.length;
+    final current = widget.index;
+    final leaving = _leaving;
+    // Painted in this order: the hidden ones, the one going, the one coming.
+    final order = <int>[
+      for (var i = 0; i < n; i++)
+        if (i != current && i != leaving) i,
+      if (leaving != null && leaving != current) leaving,
+      current,
+    ];
+    return Stack(
+      children: [
+        for (final i in order)
+          // Keyed, so each tab keeps its state when the order changes.
+          KeyedSubtree(
+            key: ValueKey<int>(i),
+            child: Offstage(
+              offstage: i != current && i != leaving,
+              child: TickerMode(
+                enabled: i == current || i == leaving,
+                child: IgnorePointer(
+                  ignoring: i != current,
+                  child: FadeTransition(
+                    opacity: i == current ? _in : kAlwaysCompleteAnimation,
+                    // Messages and Help have no background of their own: white,
+                    // so the tab beneath does not show through once faded in.
+                    child: ColoredBox(color: Colors.white, child: widget.children[i]),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

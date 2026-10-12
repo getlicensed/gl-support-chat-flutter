@@ -128,6 +128,9 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
   BuildContext? _inner;
   bool _openScheduled = false;
 
+  /// The spinner has been on screen: the tabs fade in over it when they come.
+  bool _waited = false;
+
   @override
   void initState() {
     super.initState();
@@ -295,12 +298,17 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
             }
             switch (controller.phase) {
               case MessengerPhase.loading:
+                _waited = true;
                 return const _Loading();
               case MessengerPhase.failed:
                 return _FallbackScreen(fallback: widget.fallback, browserUrl: widget.browserUrl, onRetry: controller.start);
               case MessengerPhase.ready:
                 _scheduleOpen(controller);
-                return MessengerTabs(key: ValueKey<int>(_tabsVersion), initialTab: _tab);
+                // Opened again with what it had, the tabs are simply there.
+                return _FadeIn(
+                  play: _waited && !MediaQuery.disableAnimationsOf(context),
+                  child: MessengerTabs(key: ValueKey<int>(_tabsVersion), initialTab: _tab),
+                );
             }
           }),
         );
@@ -308,6 +316,69 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
     );
   }
 }
+
+/// Home fades in once, over white, when it arrives after the spinner,
+/// instead of popping in. Opacity only: nothing moves. [play] is read once,
+/// when it first shows; a later change of tab or screen does not play it
+/// again.
+class _FadeIn extends StatefulWidget {
+  const _FadeIn({required this.play, required this.child});
+  final bool play;
+  final Widget child;
+
+  @override
+  State<_FadeIn> createState() => _FadeInState();
+}
+
+class _FadeInState extends State<_FadeIn> with SingleTickerProviderStateMixin {
+  late final AnimationController _in = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 250),
+    value: widget.play ? 0 : 1,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.play) _in.forward();
+  }
+
+  @override
+  void dispose() {
+    _in.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+        color: Colors.white,
+        child: FadeTransition(opacity: CurvedAnimation(parent: _in, curve: Curves.easeOut), child: widget.child),
+      );
+}
+
+/// The messenger's own route: a sheet that rises from the bottom over the
+/// app, which dims a little behind it, as Intercom's does. It comes up in
+/// [openTime], decelerating, and goes down a little faster, [closeTime],
+/// the same curve in reverse. A phone that asks for less motion gets it at
+/// once both ways.
+Route<void> messengerRoute(Widget page, {required bool reduceMotion}) => PageRouteBuilder<void>(
+      settings: const RouteSettings(name: messengerRoutePrefix),
+      transitionDuration: reduceMotion ? Duration.zero : messengerOpenTime,
+      reverseTransitionDuration: reduceMotion ? Duration.zero : messengerCloseTime,
+      barrierColor: const Color(0x33000000),
+      pageBuilder: (_, __, ___) => page,
+      transitionsBuilder: (context, animation, _, child) {
+        if (MediaQuery.disableAnimationsOf(context)) return child;
+        return SlideTransition(
+          position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
+              .animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
+          child: child,
+        );
+      },
+    );
+
+const messengerOpenTime = Duration(milliseconds: 300);
+const messengerCloseTime = Duration(milliseconds: 240);
 
 class _Loading extends StatelessWidget {
   const _Loading();
