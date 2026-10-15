@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart';
@@ -5,14 +6,18 @@ import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart
 import '../api/models.dart';
 import 'common.dart';
 import 'navigation.dart';
+import 'sheet.dart';
 
 /// One help-centre article, drawn natively. The HTML comes from the help
 /// centre already sanitised (DOMPurify, the same as the public /help pages);
 /// every link opens outside the messenger.
 ///
-/// An article read before, or one of the five Home shows (fetched ahead),
-/// is there at once. Otherwise three skeleton bars stand for it, and it
-/// comes in with a 200 ms fade as it rises 8 points.
+/// Three skeleton bars stand for it until it has come and nothing moves:
+/// its HTML is built only once the page has slid in (and the sheet risen,
+/// when it opens with it) — built while they moved, a long article's first
+/// build and layout took frames from the slide. It then comes in with a
+/// 200 ms fade as it rises 8 points. An article read before, or one of the
+/// five Home shows (fetched ahead), is not fetched again.
 class ArticlePage extends StatefulWidget {
   const ArticlePage({super.key, required this.slug, this.title});
 
@@ -29,10 +34,44 @@ class ArticlePage extends StatefulWidget {
 class _ArticlePageState extends State<ArticlePage> {
   Future<Article>? _article;
 
+  /// The page has slid in and the sheet is up: the HTML may be built.
+  bool _still = false;
+  ModalRoute<Object?>? _route;
+  Animation<double>? _slide;
+  ValueListenable<double>? _sheet;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _article ??= context.messenger.article(widget.slug);
+    final route = _route = ModalRoute.of(context);
+    final slide = route?.animation;
+    if (!identical(slide, _slide)) {
+      _slide?.removeStatusListener(_moved);
+      _slide = slide?..addStatusListener(_moved);
+    }
+    final sheet = MessengerSheet.maybeOf(context)?.shown;
+    if (!identical(sheet, _sheet)) {
+      _sheet?.removeListener(_moved);
+      _sheet = sheet?..addListener(_moved);
+    }
+    _still = _still || _isStill;
+  }
+
+  @override
+  void dispose() {
+    _slide?.removeStatusListener(_moved);
+    _sheet?.removeListener(_moved);
+    super.dispose();
+  }
+
+  /// Built offstage first (a Hero's measuring), a route's animation reads
+  /// as complete before it has moved.
+  bool get _isStill => !(_route?.offstage ?? false) && (_slide?.isCompleted ?? true) && (_sheet == null || _sheet!.value >= 0.999);
+
+  void _moved([Object? _]) {
+    if (_still || !_isStill || !mounted) return;
+    setState(() => _still = true);
   }
 
   // A block, not an arrow: setState refuses a callback that returns the Future.
@@ -57,9 +96,9 @@ class _ArticlePageState extends State<ArticlePage> {
             final a = snap.data;
             final title = a?.title ?? widget.title ?? '';
             final Widget body;
-            if (a != null) {
+            if (a != null && _still) {
               body = _ArticleBody(key: const ValueKey<String>('article'), article: a);
-            } else if (snap.hasError) {
+            } else if (a == null && snap.hasError) {
               body = Center(
                 key: const ValueKey<String>('error'),
                 child: Column(

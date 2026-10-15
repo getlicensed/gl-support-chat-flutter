@@ -152,13 +152,19 @@ class Palette {
 /// an app that follows the phone's dark mode would otherwise bring its light
 /// text and dark fields with it (typed text vanished on white). Only the
 /// app's typeface and sizes come across, in the messenger's own ink.
+///
+/// Ink is the platform's: on Android a ripple, InkRipple — not Material 3's
+/// sparkle, whose shader is compiled the first time it is drawn, a dropped
+/// frame on the first tap; on iOS no ripple (iOS controls do not ripple).
 ThemeData messengerTheme(BuildContext context, BrandColors brand) {
   final host = Theme.of(context);
   final cached = _themeCache;
   // The controller notifies many times a second while an AI answer types
   // out; the same theme object then rebuilds nothing below it.
   if (cached != null && identical(cached.host, host) && cached.brand == brand.hex) return cached.theme;
+  final ios = host.platform == TargetPlatform.iOS || host.platform == TargetPlatform.macOS;
   final theme = ThemeData(
+    splashFactory: ios ? NoSplash.splashFactory : InkRipple.splashFactory,
     useMaterial3: host.useMaterial3,
     colorScheme: ColorScheme.fromSeed(
       seedColor: brand.primary,

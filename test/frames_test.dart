@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart';
 import 'package:gl_support_chat/gl_support_chat.dart';
 import 'package:gl_support_chat/src/api/client.dart';
 import 'package:gl_support_chat/src/core/controller.dart';
@@ -656,14 +657,27 @@ void frames({required bool lessMotion}) {
       expect(find.byType(ArticleSkeleton), findsNothing);
     });
 
-    testWidgets('the top five are fetched while Home shows: one opened is there in the first frame', (tester) async {
+    testWidgets('the top five are fetched while Home shows: one opened is not fetched again; its HTML waits for the slide, under the skeleton', (tester) async {
       await host(tester);
       await tester.tap(find.text('Open support'));
       await settle(tester);
       expect(server.paths, contains('GET /api/help/articles/renew'), reason: 'fetched ahead');
       await tester.tap(find.text('Renewing'));
       await tester.pump();
-      await tester.pump(frame);
+      // While the page slides in, nothing of the HTML is built (0.4.8): built
+      // in the first frame, a long article took frames from the slide.
+      final page = find.byType(ArticlePage, skipOffstage: false);
+      final html = find.byType(HtmlWidget, skipOffstage: false);
+      var slid = 0;
+      for (var i = 0; i < 60 && html.evaluate().isEmpty; i++) {
+        await tester.pump(frame);
+        final route = ModalRoute.of(tester.element(page))!;
+        expect(route.animation!.isCompleted && !route.offstage || html.evaluate().isEmpty, isTrue, reason: 'frame $i: built only once it has slid in');
+        if (html.evaluate().isEmpty) expect(find.byType(ArticleSkeleton, skipOffstage: false), findsOneWidget, reason: 'the skeleton meanwhile');
+        slid = i;
+      }
+      expect(slid * 16, inInclusiveRange(250, 600), reason: 'the slide, then the article');
+      await settle(tester, frames: 5);
       expect(find.byType(ArticleSkeleton), findsNothing);
       expect(find.text('You can renew up to four months early.', findRichText: true), findsOneWidget);
       expect(server.paths.where((p) => p == 'GET /api/help/articles/renew').length, 1, reason: 'once a session');
