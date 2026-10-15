@@ -212,6 +212,11 @@ class MessengerController extends ChangeNotifier {
   String? helpUrl;
   final Map<String, Future<Uint8List>> _files = <String, Future<Uint8List>>{};
 
+  /// Articles by slug, fetched once while this customer is signed in: one
+  /// opened again, or one of the top five fetched ahead, opens at once.
+  final Map<String, Future<Article>> _articleRuns = <String, Future<Article>>{};
+  final Map<String, Article> _articles = <String, Article>{};
+
   // ---- timers ---------------------------------------------------------------
   Timer? _agentTypingTimer;
   Timer? _visitorTypingTimer;
@@ -612,6 +617,8 @@ class MessengerController extends ChangeNotifier {
     articlesLoaded = false;
     helpUrl = null;
     _files.clear();
+    _articleRuns.clear();
+    _articles.clear();
     emailSavedFor = null;
     _lastUnread = -1;
     _notify();
@@ -1555,6 +1562,12 @@ class MessengerController extends ChangeNotifier {
       if (epoch != _epoch) return;
       articles = r.articles;
       helpUrl = r.helpUrl;
+      // On screen: the five Home shows are fetched ahead, to open at once.
+      if (_attached > 0) {
+        for (final a in articles.take(5)) {
+          article(a.slug);
+        }
+      }
     } catch (_) {
       if (epoch != _epoch) return;
       if (!articlesLoaded) articles = <ArticleSummary>[]; // a failed refresh keeps the list from before
@@ -1581,7 +1594,23 @@ class MessengerController extends ChangeNotifier {
     }
   }
 
-  Future<Article> article(String slug) => api.article(slug);
+  /// One article: fetched once, then from memory. One that failed is
+  /// fetched again the next time it is asked for.
+  Future<Article> article(String slug) {
+    final epoch = _epoch;
+    return _articleRuns.putIfAbsent(slug, () {
+      final run = api.article(slug);
+      unawaited(run.then<void>((a) {
+        if (epoch == _epoch) _articles[slug] = a;
+      }, onError: (Object _) {
+        if (epoch == _epoch) _articleRuns.remove(slug);
+      }));
+      return run;
+    });
+  }
+
+  /// The article, if it has already come: drawn in the first frame.
+  Article? cachedArticle(String slug) => _articles[slug];
 
   // ======================================================================
 

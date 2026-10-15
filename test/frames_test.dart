@@ -6,6 +6,7 @@ import 'package:gl_support_chat/gl_support_chat.dart';
 import 'package:gl_support_chat/src/core/controller.dart';
 import 'package:gl_support_chat/src/core/session_store.dart';
 import 'package:gl_support_chat/src/messenger_page.dart';
+import 'package:gl_support_chat/src/ui/article.dart';
 import 'package:gl_support_chat/src/ui/common.dart';
 import 'package:gl_support_chat/src/ui/conversation.dart';
 import 'package:gl_support_chat/src/ui/sheet.dart';
@@ -521,6 +522,107 @@ void main() {
       await settle(tester);
       Navigator.of(host, rootNavigator: true).pop();
       await settle(tester);
+    });
+  });
+
+  group('articles', () {
+    final renew = <String, dynamic>{
+      'slug': 'renew',
+      'title': 'Renewing',
+      'description': 'Three steps.',
+      'html': '<h1>Before you start</h1><p>You can renew up to four months early.</p>'
+          '<ul><li><p>Have your licence number ready:<br>\u200B</p></li></ul>'
+          '<p><a href="https://www.get-licensed.co.uk/">Book A Course</a></p>'
+          '<p>Or read the <a href="https://www.gov.uk/sia">SIA pages</a> first.</p>',
+      'url': 'https://help.test/help/renew',
+    };
+
+    setUp(() {
+      server.articles = <Map<String, dynamic>>[<String, dynamic>{'slug': 'renew', 'title': 'Renewing', 'description': null}];
+      server.article = renew;
+    });
+
+    /// The size of the text run that says [text] in an article's HTML.
+    double? fontSizeOf(WidgetTester tester, String text) {
+      for (final e in find.byType(RichText).evaluate()) {
+        double? found;
+        (e.widget as RichText).text.visitChildren((span) {
+          if (span is TextSpan && span.text == text) {
+            found = span.style?.fontSize;
+            return false;
+          }
+          return true;
+        });
+        if (found != null) return found;
+      }
+      return null;
+    }
+
+    testWidgets('three skeleton bars, then the article fades in as it rises 8 points', (tester) async {
+      server.hold(<String>['/api/help/articles/renew']);
+      await host(tester);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      await tester.tap(find.text('Renewing'));
+      await settle(tester);
+      expect(find.byType(ArticleSkeleton), findsOneWidget, reason: 'not "Loading…"');
+      expect(find.text('Loading…'), findsNothing);
+      server.release();
+      await tester.pump();
+      final body = find.text('You can renew up to four months early.', findRichText: true);
+      final seen = <(double, double)>[];
+      for (var i = 0; i < 16; i++) {
+        await tester.pump(frame);
+        if (body.evaluate().isEmpty) continue;
+        final rise = find.ancestor(of: body, matching: find.byType(Transform)).evaluate().map((e) => (e.widget as Transform).transform.getTranslation().y).where((y) => y > 0);
+        seen.add((opacityOf(tester, body), rise.isEmpty ? 0 : rise.first));
+      }
+      expect(seen.where((s) => s.$1 > 0.02 && s.$1 < 0.98).length, greaterThanOrEqualTo(6), reason: 'a fade over frames, not a pop: $seen');
+      expect(seen.first.$2, inExclusiveRange(4, 8.01), reason: 'it starts lower');
+      expect(seen.last, (1.0, 0.0));
+      expect(find.byType(ArticleSkeleton), findsNothing);
+    });
+
+    testWidgets('the top five are fetched while Home shows: one opened is there in the first frame', (tester) async {
+      await host(tester);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      expect(server.paths, contains('GET /api/help/articles/renew'), reason: 'fetched ahead');
+      await tester.tap(find.text('Renewing'));
+      await tester.pump();
+      await tester.pump(frame);
+      expect(find.byType(ArticleSkeleton), findsNothing);
+      expect(find.text('You can renew up to four months early.', findRichText: true), findsOneWidget);
+      expect(server.paths.where((p) => p == 'GET /api/help/articles/renew').length, 1, reason: 'once a session');
+      await settle(tester);
+      await tester.tap(find.byTooltip('Back'));
+      await settle(tester);
+      await tester.tap(find.text('Renewing').first);
+      await settle(tester);
+      expect(server.paths.where((p) => p == 'GET /api/help/articles/renew').length, 1, reason: 'opened again: from memory');
+    });
+
+    testWidgets("a paragraph that is only a link is a button in the brand colour; a link in a sentence stays a link; headings below the title's size", (tester) async {
+      await host(tester);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      await tester.tap(find.text('Renewing'));
+      await settle(tester);
+      final button = find.widgetWithText(FilledButton, 'Book A Course');
+      expect(button, findsOneWidget);
+      expect(tester.getSize(button).height, greaterThanOrEqualTo(44));
+      final style = tester.widget<FilledButton>(button).style!;
+      expect(style.backgroundColor!.resolve(<WidgetState>{}), const Color(0xFF1F6FEB), reason: "the chatbot's colour");
+      expect(style.foregroundColor!.resolve(<WidgetState>{}), Colors.white);
+      expect(style.padding!.resolve(<WidgetState>{}), const EdgeInsets.symmetric(horizontal: 20, vertical: 12));
+      expect(find.widgetWithText(FilledButton, 'SIA pages'), findsNothing, reason: 'a link inside a sentence');
+      expect(find.text('Or read the SIA pages first.', findRichText: true), findsOneWidget);
+      expect(fontSizeOf(tester, 'Before you start'), 20, reason: 'h1 at 20, under the 22-point title');
+      expect(find.text('Have your licence number ready:', findRichText: true), findsOneWidget, reason: 'the stray line break and zero-width space gone');
+      expect(tidyArticleHtml('<li><p>Ready:<br>\u200B</p></li><p>Go<br/> </p>'), '<li><p>Ready:</p></li><p>Go</p>');
+      final open = find.ancestor(of: find.text('Open in the help centre'), matching: find.byType(TextButton));
+      expect(tester.getSize(open).height, greaterThanOrEqualTo(44));
+      expect(tester.getCenter(open).dx, closeTo(195, 1), reason: 'centred, with room around it');
     });
   });
 }
