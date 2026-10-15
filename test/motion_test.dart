@@ -308,21 +308,30 @@ void main() {
   });
 
   group('tabs, Home and the sheet', () {
-    testWidgets('the tabs cross-fade, and each keeps its state', (tester) async {
+    testWidgets('the tabs fade through — out in 90 ms, then in over 210 ms from 92% — and each keeps its state', (tester) async {
       usePhone(tester, Phone.iphone13);
       await openMessenger(tester, server, channel);
       final greeting = find.text('Hi Ayesha 👋');
       expect(greeting, findsOneWidget);
+      // The tab's own fade and scale, not the route's above it.
+      FadeTransition fadeOver(Type tab) => tester.widget<FadeTransition>(
+          find.descendant(of: find.byType(MessengerTabs), matching: find.ancestor(of: find.byType(tab), matching: find.byType(FadeTransition))).first);
+      ScaleTransition scaleOver(Type tab) => tester.widget<ScaleTransition>(
+          find.descendant(of: find.byType(MessengerTabs), matching: find.ancestor(of: find.byType(tab), matching: find.byType(ScaleTransition))).first);
       await tester.tap(find.text('Messages'));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 60));
-      expect(greeting, findsOneWidget, reason: 'Home stays beneath while Messages fades in');
-      // The tab's own fade, not the route's above it.
-      final messages = find.descendant(of: find.byType(MessengerTabs), matching: find.ancestor(of: find.byType(MessagesTab), matching: find.byType(FadeTransition))).first;
-      expect(tester.widget<FadeTransition>(messages).opacity.value, inExclusiveRange(0, 1));
-      await tester.pump(const Duration(milliseconds: 120));
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 44));
+      expect(fadeOver(HomeTab).opacity.value, inExclusiveRange(0, 1), reason: 'Home fading out first');
+      expect(fadeOver(MessagesTab).opacity.value, 0, reason: 'Messages not yet: never two tabs over each other');
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(fadeOver(HomeTab).opacity.value, 0, reason: 'Home out after 90 ms');
+      expect(fadeOver(MessagesTab).opacity.value, inExclusiveRange(0, 1), reason: 'then Messages in');
+      expect(scaleOver(MessagesTab).scale.value, inExclusiveRange(0.92, 1), reason: 'growing from 92%');
+      await tester.pump(const Duration(milliseconds: 200));
       expect(greeting, findsNothing, reason: 'then Home goes');
-      expect(tester.widget<FadeTransition>(messages).opacity.value, 1);
+      expect(fadeOver(MessagesTab).opacity.value, 1);
+      expect(scaleOver(MessagesTab).scale.value, 1);
 
       await tester.tap(find.text('Help').last);
       await settle(tester, frames: 4);
@@ -549,21 +558,24 @@ void main() {
       expect(tester.getRect(find.text('And here is the tracking number.')).bottom, lessThanOrEqualTo(view.bottom));
     });
 
-    testWidgets('a tab and straight back: the one left is never shown whole over it', (tester) async {
+    testWidgets('a tab and straight back: the one still on screen comes back from where it was, the other never shows', (tester) async {
       usePhone(tester, Phone.iphone13);
       await openMessenger(tester, server, channel);
       Finder fadeOver(Type tab) => find.descendant(of: find.byType(MessengerTabs), matching: find.ancestor(of: find.byType(tab), matching: find.byType(FadeTransition))).first;
       await tester.tap(find.text('Messages'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 16));
-      await tester.pump(const Duration(milliseconds: 60));
-      final messagesShown = tester.widget<FadeTransition>(fadeOver(MessagesTab)).opacity.value;
-      expect(messagesShown, inExclusiveRange(0, 1));
+      await tester.pump(const Duration(milliseconds: 32));
+      final homeShown = tester.widget<FadeTransition>(fadeOver(HomeTab)).opacity.value;
+      expect(homeShown, inExclusiveRange(0, 1), reason: 'Home part way out');
       await tester.tap(find.text('Home'));
       await tester.pump();
-      // Messages is beneath now, whole; Home over it shows as much of itself as it did.
-      final home = tester.widget<FadeTransition>(fadeOver(HomeTab)).opacity.value;
-      expect(home, closeTo(1 - messagesShown, 0.05), reason: 'Messages stays as faint as it was');
+      expect(tester.widget<FadeTransition>(fadeOver(HomeTab)).opacity.value, closeTo(homeShown, 0.05), reason: 'Home back from as much as showed');
+      for (var i = 0; i < 12; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        final messages = find.descendant(of: find.byType(MessengerTabs), matching: find.byType(MessagesTab));
+        if (messages.evaluate().isNotEmpty) expect(tester.widget<FadeTransition>(fadeOver(MessagesTab)).opacity.value, 0, reason: 'Messages never shows');
+      }
       await settle(tester, frames: 4);
       expect(find.byType(MessagesTab), findsNothing);
       expect(tester.widget<FadeTransition>(fadeOver(HomeTab)).opacity.value, 1);

@@ -380,27 +380,93 @@ class _ConnectionBarState extends State<ConnectionBar> {
   @override
   Widget build(BuildContext context) {
     final link = context.messenger.link;
+    var shown = true;
     if (link == LinkState.connected) {
       _wait?.cancel();
       _wait = null;
       _slow = false;
-      return const SizedBox.shrink();
-    }
-    if (link == LinkState.connecting && !_slow) {
+      shown = false;
+    } else if (link == LinkState.connecting && !_slow) {
       _wait ??= Timer(ConnectionBar.patience, () {
         if (mounted) setState(() => _slow = true);
       });
-      return const SizedBox.shrink();
+      shown = false;
     }
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
-      decoration: const BoxDecoration(color: Color(0xFFFEF3C7), border: Border(bottom: BorderSide(color: Color(0xFFFDE68A)))),
-      child: Text(
-        link == LinkState.connecting ? 'Connecting…' : 'Reconnecting…',
-        textAlign: TextAlign.center,
-        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF92400E)),
+    // It opens and closes over 200 ms, rather than push the screen down
+    // (and up again) in one frame.
+    return Reveal(
+      shown: shown,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+        decoration: const BoxDecoration(color: Color(0xFFFEF3C7), border: Border(bottom: BorderSide(color: Color(0xFFFDE68A)))),
+        child: Text(
+          link == LinkState.reconnecting ? 'Reconnecting…' : 'Connecting…',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Color(0xFF92400E)),
+        ),
       ),
+    );
+  }
+}
+
+/// Something that comes and goes — a bar, a pill: over [time] it opens and
+/// fades in, and fades as it closes, instead of appearing or vanishing in
+/// one frame. While it goes it shows what it last showed; once gone it is
+/// out of the tree. [size]: it takes its room as it opens (a bar in a
+/// column); without, it only fades (a pill over the thread). At once for a
+/// phone that asks for less motion.
+class Reveal extends StatefulWidget {
+  const Reveal({super.key, required this.shown, required this.child, this.size = true});
+
+  final bool shown;
+  final Widget child;
+  final bool size;
+
+  static const time = Duration(milliseconds: 200);
+
+  @override
+  State<Reveal> createState() => _RevealState();
+}
+
+class _RevealState extends State<Reveal> with SingleTickerProviderStateMixin {
+  late final AnimationController _open = AnimationController(vsync: this, duration: Reveal.time, value: widget.shown ? 1 : 0);
+  late final CurvedAnimation _t = CurvedAnimation(parent: _open, curve: Curves.easeOutCubic);
+  late Widget _last = widget.child;
+
+  @override
+  void didUpdateWidget(Reveal old) {
+    super.didUpdateWidget(old);
+    if (widget.shown) _last = widget.child;
+    if (widget.shown == old.shown) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _open.value = widget.shown ? 1 : 0;
+    } else if (widget.shown) {
+      _open.forward();
+    } else {
+      _open.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _t.dispose();
+    _open.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _open,
+      builder: (context, _) {
+        if (_open.isDismissed) return const SizedBox.shrink();
+        final faded = IgnorePointer(ignoring: !widget.shown, child: FadeTransition(opacity: _t, child: _last));
+        if (!widget.size) return faded;
+        // SizeTransition's own alignment is spelt differently before and
+        // after Flutter 3.41: the clip and the factor by hand work on both.
+        return ClipRect(child: Align(alignment: Alignment.topCenter, heightFactor: _t.value, child: faded));
+      },
     );
   }
 }

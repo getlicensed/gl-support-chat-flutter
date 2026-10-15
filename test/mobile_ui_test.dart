@@ -338,6 +338,7 @@ void main() {
     await openThread(tester, messages: thread(4), phone: Phone.iphoneSE);
     channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 0});
     await tester.pump();
+    await settle(tester, frames: 5); // it opens over 200 ms
     expect(find.text('Your email for follow-up'), findsOneWidget, reason: 'keyboard down: the whole form');
 
     setKeyboard(tester, Phone.iphoneSE, 260);
@@ -647,6 +648,7 @@ void main() {
     channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 1});
     await tester.pump();
     expect(find.descendant(of: page(), matching: find.text('Active now')), findsOneWidget);
+    await settle(tester, frames: 5); // the bar closes over 200 ms
     expect(find.text('Connecting…'), findsNothing);
     channel.server('disconnect', 'transport close');
     await tester.pump();

@@ -31,7 +31,6 @@ class _MessengerTabsState extends State<MessengerTabs> {
 
   @override
   Widget build(BuildContext context) {
-    final brand = context.brand;
     // Back (Android's button or gesture) steps back to the tab the messenger
     // opened on before it closes the messenger.
     return PopScope<Object?>(
@@ -39,11 +38,7 @@ class _MessengerTabsState extends State<MessengerTabs> {
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _go(widget.initialTab);
       },
-      // Home's top is the brand colour; Messages and Help are white.
-      child: AnnotatedRegion<SystemUiOverlayStyle>(
-        value: _tab == 0 ? statusBarOnBrand(brand) : statusBarStyle(darkIcons: true),
-        child: _tabs(context),
-      ),
+      child: _tabs(context),
     );
   }
 
@@ -54,6 +49,8 @@ class _MessengerTabsState extends State<MessengerTabs> {
       backgroundColor: Colors.white,
       body: _TabStack(
         index: _tab,
+        // Home's top is the brand colour; Messages and Help are white.
+        styles: [statusBarOnBrand(brand), statusBarStyle(darkIcons: true), statusBarStyle(darkIcons: true)],
         children: [
           HomeTab(onSearch: () => _go(2, focusSearch: true), onMessages: () => _go(1)),
           const MessagesTab(),
@@ -108,27 +105,50 @@ class _MessengerTabsState extends State<MessengerTabs> {
 }
 
 /// The tabs, each kept alive as an IndexedStack keeps them (a search typed
-/// in Help, the list's place), with a short cross-fade instead of a cut: the
-/// tab coming in fades in over the one going, which stays whole beneath it
-/// until it is covered, so nothing flashes white between them. At once on a
-/// phone that asks for less motion. As in an IndexedStack, a tab not shown
-/// takes no focus: a search left typed in Help lets the keyboard go.
+/// in Help, the list's place), changing by Material's fade-through: the tab
+/// going fades out in 90 ms, then the one coming fades in over 210 ms as it
+/// grows from 92% — one tab on screen at a time, never two over each other.
+/// The status bar changes with what is on screen, when the new tab shows,
+/// not a frame (or 90 ms) early. At once on a phone that asks for less
+/// motion. As in an IndexedStack, a tab not shown takes no focus: a search
+/// left typed in Help lets the keyboard go.
 class _TabStack extends StatefulWidget {
-  const _TabStack({required this.index, required this.children});
+  const _TabStack({required this.index, required this.styles, required this.children});
   final int index;
+  final List<SystemUiOverlayStyle> styles;
   final List<Widget> children;
+
+  static const time = Duration(milliseconds: 300);
+
+  /// The share of [time] the tab going takes to fade out: 90 ms.
+  static const out = 0.3;
+  static const grow = 0.92;
 
   @override
   State<_TabStack> createState() => _TabStackState();
 }
 
 class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixin {
-  late final AnimationController _fade = AnimationController(vsync: this, duration: const Duration(milliseconds: 150), value: 1)
+  // Linear, so a change cut short is picked up exactly where it was.
+  late final AnimationController _t = AnimationController(vsync: this, duration: _TabStack.time, value: 1)
     ..addStatusListener((status) {
       if (status == AnimationStatus.completed && _leaving != null && mounted) setState(() => _leaving = null);
     });
-  /// The tab going, drawn under the new one while it fades in.
+  late final Animation<double> _goes = ReverseAnimation(CurvedAnimation(parent: _t, curve: const Interval(0, _TabStack.out)));
+  late final Animation<double> _comes = CurvedAnimation(parent: _t, curve: const Interval(_TabStack.out, 1));
+  late final Animation<double> _scale = Tween<double>(begin: _TabStack.grow, end: 1)
+      .animate(CurvedAnimation(parent: _t, curve: const Interval(_TabStack.out, 1, curve: Curves.easeOutCubic)));
+
+  /// The tab going, while it fades out.
   int? _leaving;
+
+  /// The tab on screen with [current] the one asked for, and how much of it shows.
+  (int, double) _onScreen(int current) {
+    final v = _t.value;
+    final leaving = _leaving;
+    if (leaving != null && v < _TabStack.out) return (leaving, 1 - v / _TabStack.out);
+    return (current, ((v - _TabStack.out) / (1 - _TabStack.out)).clamp(0.0, 1.0));
+  }
 
   @override
   void didUpdateWidget(_TabStack old) {
@@ -136,27 +156,25 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
     if (old.index == widget.index) return;
     if (MediaQuery.disableAnimationsOf(context)) {
       _leaving = null;
-      _fade.value = 1;
+      _t.value = 1;
       return;
     }
-    // Linear, so a fade cut short can be picked up exactly where it was.
-    final shown = _fade.value;
-    final midway = _leaving != null && shown < 1;
-    if (midway && widget.index == _leaving) {
-      // Straight back before the fade ended: the tab left goes beneath, as
-      // faint as it was seen, and this one comes in from as much as showed.
-      _leaving = old.index;
-      _fade.forward(from: 1 - shown);
+    final (shown, amount) = _onScreen(old.index);
+    if (shown == widget.index) {
+      // Straight back to the tab still on screen: it comes back from as
+      // much of it as shows, with nothing to fade out first.
+      _leaving = null;
+      _t.forward(from: _TabStack.out + (1 - _TabStack.out) * amount);
     } else {
-      // From a fade cut short to a third tab: the one more in view stays beneath.
-      if (!midway || shown >= 0.5) _leaving = old.index;
-      _fade.forward(from: 0);
+      // The one on screen fades out from as much as shows, then the new one in.
+      _leaving = shown;
+      _t.forward(from: _TabStack.out * (1 - amount));
     }
   }
 
   @override
   void dispose() {
-    _fade.dispose();
+    _t.dispose();
     super.dispose();
   }
 
@@ -172,7 +190,7 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
       if (leaving != null && leaving != current) leaving,
       current,
     ];
-    return Stack(
+    final stack = Stack(
       children: [
         for (final i in order)
           // Keyed, so each tab keeps its state when the order changes.
@@ -187,10 +205,12 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
                   child: IgnorePointer(
                     ignoring: i != current,
                     child: FadeTransition(
-                      opacity: i == current ? _fade : kAlwaysCompleteAnimation,
-                      // Messages and Help have no background of their own: white,
-                      // so the tab beneath does not show through once faded in.
-                      child: ColoredBox(color: Colors.white, child: widget.children[i]),
+                      opacity: i == current ? _comes : (i == leaving ? _goes : kAlwaysCompleteAnimation),
+                      child: ScaleTransition(
+                        scale: i == current ? _scale : kAlwaysCompleteAnimation,
+                        // Messages and Help have no background of their own: white.
+                        child: ColoredBox(color: Colors.white, child: widget.children[i]),
+                      ),
                     ),
                   ),
                 ),
@@ -198,6 +218,11 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
             ),
           ),
       ],
+    );
+    return AnimatedBuilder(
+      animation: _t,
+      child: stack,
+      builder: (context, stack) => AnnotatedRegion<SystemUiOverlayStyle>(value: widget.styles[_onScreen(current).$1], child: stack!),
     );
   }
 }

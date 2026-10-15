@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gl_support_chat/gl_support_chat.dart';
 import 'package:gl_support_chat/src/core/controller.dart';
@@ -778,6 +779,91 @@ void main() {
       final size = tester.getSize(box);
       expect(size.width / size.height, closeTo(4 / 3, 0.01));
       expect(size.height, greaterThan(100), reason: 'its room taken before the picture loads');
+    });
+  });
+
+  group('tabs and small bars', () {
+    testWidgets('tabs fade through: out in 90 ms, in over 210 ms from 92%; never two at once; the status bar changes with what shows', (tester) async {
+      await host(tester);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      Finder over(Type tab, Type t) => find.descendant(of: find.byType(MessengerTabs), matching: find.ancestor(of: find.byType(tab), matching: find.byType(t)));
+      double fade(Type tab) => over(tab, FadeTransition).evaluate().isEmpty ? 0 : tester.widget<FadeTransition>(over(tab, FadeTransition).first).opacity.value;
+      double scale(Type tab) => tester.widget<ScaleTransition>(over(tab, ScaleTransition).first).scale.value;
+      SystemUiOverlayStyle style() => tester.widget<AnnotatedRegion<SystemUiOverlayStyle>>(find.descendant(of: find.byType(MessengerTabs), matching: find.byType(AnnotatedRegion<SystemUiOverlayStyle>)).first).value;
+      await tester.tap(find.text('Messages'));
+      await tester.pump();
+      final frames = <(double, double, double, Brightness?)>[];
+      for (var i = 0; i < 22; i++) {
+        await tester.pump(frame);
+        frames.add((fade(HomeTab), fade(MessagesTab), scale(MessagesTab), style().statusBarIconBrightness));
+      }
+      var homeFrames = 0;
+      var messagesFrames = 0;
+      for (final f in frames) {
+        expect(f.$1 == 0 || f.$2 == 0, isTrue, reason: 'one tab at a time: $f');
+        if (f.$1 > 0) {
+          homeFrames++;
+          expect(f.$4, Brightness.light, reason: 'Home on screen: icons for the brand band');
+        }
+        if (f.$2 > 0) {
+          messagesFrames++;
+          expect(f.$4, Brightness.dark, reason: 'Messages on screen: icons for white');
+          expect(f.$3, greaterThanOrEqualTo(0.92));
+        }
+      }
+      expect(homeFrames, inInclusiveRange(3, 6), reason: 'Home goes in about 90 ms');
+      expect(messagesFrames, greaterThanOrEqualTo(10), reason: 'Messages comes in over about 210 ms');
+      expect(frames.firstWhere((f) => f.$2 > 0).$3, lessThan(0.95), reason: 'from about 92%');
+      expect(frames.last.$2, 1);
+      expect(frames.last.$3, 1);
+    });
+
+    testWidgets('"Reconnecting…" opens over 200 ms and closes the same way, never in one frame', (tester) async {
+      final manual = ManualChannel(autoConnect: true);
+      usePhone(tester, Phone.iphone13);
+      await tester.pumpWidget(MaterialApp(home: GLSupportChatPage(controller: controllerOn(server, manual), screen: GLSupportChatScreen.conversation('conv-1'))));
+      await settle(tester, frames: 14);
+      final bar = find.byType(ConnectionBar);
+      manual.drop();
+      await tester.pump();
+      final open = await sample(tester, 16, () => tester.getSize(bar).height);
+      expect(open.where((h) => h > 0.5 && h < open.last - 0.5).length, greaterThanOrEqualTo(4), reason: 'opening: $open');
+      for (var i = 1; i < open.length; i++) {
+        expect(open[i] - open[i - 1], lessThan(14), reason: 'no jump');
+      }
+      expect(find.text('Reconnecting…'), findsOneWidget);
+      manual.open();
+      await tester.pump();
+      final close = await sample(tester, 16, () => tester.getSize(bar).height);
+      expect(close.where((h) => h > 0.5 && h < open.last - 0.5).length, greaterThanOrEqualTo(4), reason: 'closing: $close');
+      expect(close.last, 0);
+      expect(find.text('Reconnecting…'), findsNothing);
+    });
+
+    testWidgets('the "New message" pill fades in and out', (tester) async {
+      server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
+        for (var i = 0; i < 30; i++)
+          msg('m$i', i.isEven ? 'visitor' : 'agent', 'Message number $i, about the licence card and when it will arrive.', at: DateTime.utc(2026, 10, 6, 9, i).toIso8601String()),
+      ]);
+      final manual = ManualChannel(autoConnect: true);
+      usePhone(tester, Phone.iphone13);
+      await tester.pumpWidget(MaterialApp(home: GLSupportChatPage(controller: controllerOn(server, manual), screen: GLSupportChatScreen.conversation('conv-1'))));
+      await settle(tester, frames: 14);
+      final list = find.descendant(of: find.byType(ConversationPage), matching: find.byType(ListView));
+      await tester.drag(list, const Offset(0, 600));
+      await settle(tester);
+      manual.server('message:created', msg('r1', 'agent', 'Found it.', at: at(40)));
+      await tester.pump();
+      final pill = find.text('New message');
+      final shown = await sample(tester, 14, () => opacityOf(tester, pill));
+      expect(shown.where((o) => o > 0.02 && o < 0.98).length, greaterThanOrEqualTo(4), reason: 'fading in: $shown');
+      expect(shown.last, 1);
+      await tester.tap(pill);
+      await tester.pump();
+      final gone = await sample(tester, 14, () => opacityOf(tester, pill));
+      expect(gone.where((o) => o > 0.02 && o < 0.98).length, greaterThanOrEqualTo(3), reason: 'fading out: $gone');
+      expect(pill, findsNothing);
     });
   });
 }

@@ -446,6 +446,9 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   /// Replies that arrived while the reader was up the thread.
   int _unseen = 0;
 
+  /// What the pill last said: kept while it fades away.
+  int _pillCount = 1;
+
   /// How far from the latest still counts as reading it, in logical pixels.
   static const _near = 120.0;
 
@@ -635,14 +638,17 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
       children: [
         // Its own layer: the easing repaints the thread, not the header and composer.
         Positioned.fill(child: RepaintBoundary(child: _Shifted(thread: this, child: list))),
-        if (_unseen > 0)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 10,
-            child: Center(
+        // It fades in and out over 200 ms rather than blink.
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 10,
+          child: Center(
+            child: Reveal(
+              shown: _unseen > 0,
+              size: false,
               child: _NewMessagePill(
-                count: _unseen,
+                count: _unseen > 0 ? _pillCount = _unseen : _pillCount,
                 onTap: () {
                   setState(() => _unseen = 0);
                   _toLatest();
@@ -650,6 +656,7 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
               ),
             ),
           ),
+        ),
       ],
     );
   }
@@ -952,7 +959,7 @@ class _LiveFooter extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (c.showEmailBar && emailBar) _EmailBar(compact: compact),
+        Reveal(shown: c.showEmailBar && emailBar, child: _EmailBar(compact: compact)),
         if (sendError != null && c.outgoing.isEmpty)
           Padding(padding: const EdgeInsets.fromLTRB(16, 6, 16, 0), child: _ErrorLine(sendError)),
         // Flexible: in the little room of a phone on its side it is the
@@ -1887,8 +1894,10 @@ class _Chip extends StatelessWidget {
   Widget build(BuildContext context) {
     final brand = context.brand;
     final fg = whatsapp ? Palette.whatsappText : brand.primary;
-    return Opacity(
+    // Dimmed while a choice is on its way, softly rather than in a frame.
+    return AnimatedOpacity(
       opacity: enabled ? 1 : 0.55,
+      duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : Reveal.time,
       child: Material(
         color: whatsapp ? Colors.white : brand.light,
         shape: RoundedRectangleBorder(
