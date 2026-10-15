@@ -467,7 +467,7 @@ void main() {
     atLeast44(find.descendant(of: page(), matching: button('Back')));
     atLeast44(find.descendant(of: page(), matching: button('Close')));
     expect(tester.getSize(find.ancestor(of: find.text('How do I renew my licence?'), matching: find.byType(InkWell)).first).height, greaterThanOrEqualTo(44));
-    atLeast44(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: find.byType(InkWell)).first);
+    atLeast44(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: _ink).first);
 
     // A thumb beside the drawn circle still counts.
     final back = tester.getRect(find.descendant(of: page(), matching: button('Back')));
@@ -610,7 +610,7 @@ void main() {
       expect(tester.getRect(threadList()).left, greaterThanOrEqualTo(side));
       expect(tester.getRect(threadList()).right, lessThanOrEqualTo(width - side));
       expect(tester.getRect(find.byTooltip('Send a photo')).left, greaterThanOrEqualTo(side));
-      expect(tester.getRect(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: find.byType(InkWell)).first).right, lessThanOrEqualTo(width - side));
+      expect(tester.getRect(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: _ink).first).right, lessThanOrEqualTo(width - side));
     });
   });
 
@@ -625,11 +625,11 @@ void main() {
     await tester.pump();
     expect(find.text('Connecting…'), findsOneWidget);
 
-    expect(tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.add_photo_alternate_outlined)).onPressed, isNotNull);
+    expect(tester.widget<Pressable>(find.ancestor(of: find.byIcon(Icons.add_photo_alternate_outlined), matching: find.byType(Pressable))).onTap, isNotNull);
     answerSends();
     await tester.enterText(composer(), 'Hello while connecting');
     await tester.pump();
-    expect(tester.widget<InkWell>(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: find.byType(InkWell)).first).onTap, isNotNull);
+    expect(tester.widget<InkWell>(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: _ink).first).onTap, isNotNull);
     await tester.tap(find.bySemanticsLabel('Send'));
     await settle(tester);
     expect(find.text('Hello while connecting'), findsOneWidget, reason: 'on screen: on its way, or sent');
@@ -674,7 +674,7 @@ void main() {
 
     await open();
     expect(typed(), 'My licence number is');
-    expect(tester.widget<InkWell>(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: find.byType(InkWell)).first).onTap, isNotNull,
+    expect(tester.widget<InkWell>(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: _ink).first).onTap, isNotNull,
         reason: 'Send is ready for it');
     await tester.pumpWidget(const SizedBox());
 
@@ -739,7 +739,7 @@ void main() {
           }
           await settle(tester, frames: 3);
           expect(tester.takeException(), isNull, reason: what);
-          final bottom = tester.getRect(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: find.byType(InkWell)).first).bottom;
+          final bottom = tester.getRect(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: _ink).first).bottom;
           expect(bottom, lessThanOrEqualTo(phone.size.height - (keyboard ? phone.keyboard : 0) + 0.5), reason: what);
         }
       }
@@ -778,3 +778,7 @@ const _png = <int>[
 
 /// A photo from bytes held here — drawn at its size in the thread (0.4.8).
 bool _memory(ImageProvider image) => image is MemoryImage || (image is ResizeImage && image.imageProvider is MemoryImage);
+
+/// Ink to tap: an InkWell, or one drawn in a part of its target (Send's
+/// circle in its 44 points, 0.4.8).
+final _ink = find.byWidgetPredicate((w) => w is InkWell);

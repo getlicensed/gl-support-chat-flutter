@@ -798,14 +798,14 @@ void frames({required bool lessMotion}) {
       expect(opacityOf(tester, bubble), 1);
     });
 
-    testWidgets('the open conversation, the first time: a spinner, then the thread fades in; the composer waits at its own height', (tester) async {
+    testWidgets('the open conversation, the first time: its skeleton, then the thread fades in; the composer waits at its own height', (tester) async {
       server.hold(<String>['/widget/messages']);
       await host(tester);
       await tester.tap(find.text('Open support'));
       await settle(tester);
       await tester.tap(find.text('Send us a message'));
       await settle(tester);
-      expect(find.descendant(of: page(), matching: find.byType(CircularProgressIndicator)), findsOneWidget);
+      expect(find.descendant(of: page(), matching: find.byType(ThreadSkeleton)), findsOneWidget, reason: 'its shape, not a spinner (0.4.8)');
       expect(find.descendant(of: page(), matching: find.byType(TextField)), findsNothing, reason: 'nothing to type in yet');
       expect(find.text('Loading…'), findsOneWidget, reason: 'the locked composer says why');
       final lockedTop = tester.getTopLeft(find.text('Loading…')).dy;
@@ -849,6 +849,7 @@ void frames({required bool lessMotion}) {
       await tester.pump();
       await tester.pump(frame);
       expect(find.text('Can I have a refund?'), findsOneWidget, reason: 'what it said last time, before any answer');
+      expect(find.descendant(of: page(), matching: find.byType(ThreadSkeleton)), findsNothing);
       expect(find.descendant(of: page(), matching: find.byType(CircularProgressIndicator)), findsNothing);
       server.release();
       await settle(tester);

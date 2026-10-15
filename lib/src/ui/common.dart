@@ -224,11 +224,151 @@ Future<void> openExternal(BuildContext context, Uri uri) async {
   messenger?.showSnackBar(const SnackBar(content: Text("Couldn't open that link on this phone.")));
 }
 
+/// Something to tap, with the platform's feedback under the finger.
+///
+/// iOS: no ripple (iOS controls do not ripple) but a highlight over the
+/// shape — black 8% on white, white 15% on the brand colour — in over
+/// 100 ms from the touch and out over 200 ms after; InkWell's own takes
+/// 200 ms to come, half a quick tap. Drawn over what it covers, it shows on
+/// any box. Android: Material's ripple (InkRipple, see [messengerTheme]),
+/// tinted with the brand colour, or white on it; it is drawn on the
+/// Material below, so no opaque box may sit between the two.
+///
+/// One gesture recogniser for the whole of it: feedback never waits for a
+/// second one on the same spot to give up.
+class Pressable extends StatefulWidget {
+  const Pressable({super.key, required this.onTap, required this.child, this.shape = const RoundedRectangleBorder(), this.onBrand = false, this.inner});
+
+  final VoidCallback? onTap;
+  final Widget child;
+
+  /// The highlight's and the ripple's shape: the shape of what is tapped.
+  final ShapeBorder shape;
+
+  /// On the brand colour: white feedback.
+  final bool onBrand;
+
+  /// The ink's size, centred in a larger touch target (a 32-point circle
+  /// in a 44-point square); null: the whole of it.
+  final Size? inner;
+
+  static const highlightIn = Duration(milliseconds: 100);
+  static const highlightOut = Duration(milliseconds: 200);
+
+  @override
+  State<Pressable> createState() => _PressableState();
+}
+
+class _PressableState extends State<Pressable> with SingleTickerProviderStateMixin {
+  // Its whole time even with less motion asked for: see [fullTime].
+  late final AnimationController _down = AnimationController(
+    vsync: this,
+    duration: Pressable.highlightIn,
+    reverseDuration: Pressable.highlightOut,
+    animationBehavior: AnimationBehavior.preserve,
+  );
+
+  @override
+  void dispose() {
+    _down.dispose();
+    super.dispose();
+  }
+
+  /// Down: from where it is, or a frame in — the finger came down before
+  /// the frame that first draws it, and that frame shows it already.
+  void _pressed(bool down) => down ? _down.forward(from: _down.value > _frame ? _down.value : _frame) : _down.reverse();
+
+  /// One 60 Hz frame of the 100 ms it takes to come.
+  static const _frame = 16 / 100;
+
+  @override
+  Widget build(BuildContext context) {
+    final platform = Theme.of(context).platform;
+    final ios = platform == TargetPlatform.iOS || platform == TargetPlatform.macOS;
+    // Read, not watched: whoever builds this is built again with the brand.
+    final brand = context.getInheritedWidgetOfExactType<MessengerScope>()?.controller.brand;
+    final splash = !ios ? (widget.onBrand ? Colors.white.withAlpha(61) : brand?.ring) : Colors.transparent;
+    final child = !ios
+        ? widget.child
+        : CustomPaint(
+            foregroundPainter: PressHighlight(_down, shape: widget.shape, inner: widget.inner, onBrand: widget.onBrand),
+            child: widget.child,
+          );
+    final inner = widget.inner;
+    if (inner != null) {
+      return _InnerInk(
+        inner: inner,
+        onTap: widget.onTap,
+        onHighlightChanged: ios ? _pressed : null,
+        customBorder: widget.shape,
+        splashFactory: ios ? NoSplash.splashFactory : InkRipple.splashFactory,
+        splashColor: splash,
+        highlightColor: Colors.transparent,
+        child: child,
+      );
+    }
+    return InkWell(
+      onTap: widget.onTap,
+      onHighlightChanged: ios ? _pressed : null,
+      customBorder: widget.shape,
+      splashFactory: ios ? NoSplash.splashFactory : InkRipple.splashFactory,
+      splashColor: splash,
+      highlightColor: Colors.transparent,
+      child: child,
+    );
+  }
+}
+
+/// An InkWell whose ink is drawn in a box of [inner] at its centre.
+class _InnerInk extends InkWell {
+  const _InnerInk({
+    required this.inner,
+    super.onTap,
+    super.onHighlightChanged,
+    super.customBorder,
+    super.splashFactory,
+    super.splashColor,
+    super.highlightColor,
+    super.child,
+  });
+
+  final Size inner;
+
+  @override
+  RectCallback? getRectCallback(RenderBox referenceBox) => () => Alignment.center.inscribe(inner, Offset.zero & referenceBox.size);
+}
+
+/// iOS's press highlight: [amount] of black 8% (white 15% on the brand
+/// colour) over [shape], in [inner] when given.
+class PressHighlight extends CustomPainter {
+  PressHighlight(this.amount, {required this.shape, this.inner, this.onBrand = false}) : super(repaint: amount);
+
+  final Animation<double> amount;
+  final ShapeBorder shape;
+  final Size? inner;
+  final bool onBrand;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final t = amount.value;
+    if (t <= 0) return;
+    final box = Offset.zero & size;
+    final rect = inner == null ? box : Alignment.center.inscribe(inner!, box);
+    // The channels as integers: Color's accessors changed between Flutter 3.24 and 3.27.
+    final paint = Paint()..color = onBrand ? Color.fromARGB((38 * t).round(), 255, 255, 255) : Color.fromARGB((20 * t).round(), 0, 0, 0);
+    canvas.drawPath(shape.getOuterPath(rect), paint);
+  }
+
+  @override
+  bool shouldRepaint(PressHighlight old) => old.amount != amount || old.shape != shape || old.inner != inner || old.onBrand != onBrand;
+}
+
 /// A round icon button (close, back) on the brand header or a white page.
 ///
 /// The circle is drawn at [size]; the area that takes the tap is at least
 /// 44 × 44 (Apple's minimum), so a thumb that lands beside a small circle
-/// still counts.
+/// still counts — one recogniser for all of it, so the feedback in the
+/// circle starts with the touch.
 class RoundIconButton extends StatelessWidget {
   const RoundIconButton({super.key, required this.icon, required this.onTap, required this.tooltip, this.light = false, this.size = 36});
 
@@ -249,33 +389,81 @@ class RoundIconButton extends StatelessWidget {
     return Semantics(
       button: true,
       label: tooltip,
+      // Named for a screen reader and found by its name; no long press to
+      // show it, which held a tap's feedback back until the long press gave up.
       child: Tooltip(
         message: tooltip,
-        // The margin around the circle takes the tap; a tap on the circle is
-        // the InkWell's (the innermost wins), so it fires once, with its ripple.
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: onTap,
+        triggerMode: TooltipTriggerMode.manual,
+        excludeFromSemantics: true,
+        // A Material of its own, the circle painted on it as Ink: Android's
+        // ripple is drawn on the Material, so over the circle, not under it
+        // and under the header's colour.
+        child: Material(
+          type: MaterialType.transparency,
           child: SizedBox(
             width: target,
             height: target,
-            child: Center(
-              child: Material(
-                color: light ? Colors.white.withAlpha(56) : Palette.fill,
-                shape: const CircleBorder(),
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: onTap,
-                  child: SizedBox(
-                    width: size,
-                    height: size,
-                    child: Icon(icon, size: size * 0.5, color: light ? Colors.white : Palette.body),
-                  ),
+            child: Pressable(
+              onTap: onTap,
+              shape: const CircleBorder(),
+              inner: Size(size, size),
+              onBrand: light,
+              child: Center(
+                child: Ink(
+                  width: size,
+                  height: size,
+                  decoration: BoxDecoration(color: light ? Colors.white.withAlpha(56) : Palette.fill, shape: BoxShape.circle),
+                  child: Icon(icon, size: size * 0.5, color: light ? Colors.white : Palette.body),
                 ),
               ),
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// An emoji to choose — the article's faces, the CSAT faces: the one
+/// chosen grows a little, with a slight overshoot; the others turn grey
+/// and fade back. 200 ms, with less motion asked for too (see [fullTime]).
+class ChoiceFace extends StatelessWidget {
+  const ChoiceFace({super.key, required this.emoji, required this.chosen, required this.faded, required this.size});
+
+  final String emoji;
+  final bool chosen;
+  final bool faded;
+  final double size;
+
+  static const time = Duration(milliseconds: 200);
+  static const grown = 1.3;
+
+  /// Colour at [s] of full (1) to none (0), by the eye's weights.
+  static ColorFilter _saturation(double s) {
+    const r = 0.2126, g = 0.7152, b = 0.0722;
+    return ColorFilter.matrix(<double>[
+      r + (1 - r) * s, g - g * s, b - b * s, 0, 0, //
+      r - r * s, g + (1 - g) * s, b - b * s, 0, 0, //
+      r - r * s, g - g * s, b + (1 - b) * s, 0, 0, //
+      0, 0, 0, 1, 0,
+    ]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final time = fullTime(ChoiceFace.time);
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(end: faded ? 0 : 1),
+      duration: time,
+      builder: (_, colour, child) => ColorFiltered(
+        colorFilter: _saturation(colour),
+        child: Opacity(opacity: 0.4 + 0.6 * colour, child: child),
+      ),
+      child: AnimatedScale(
+        scale: chosen ? grown : 1,
+        duration: time,
+        curve: Curves.easeOutBack,
+        child: Text(emoji, style: TextStyle(fontSize: size)),
       ),
     );
   }
@@ -597,7 +785,13 @@ class MessengerCard extends StatelessWidget {
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(16),
         clipBehavior: Clip.antiAlias,
-        child: onTap == null ? Padding(padding: padding, child: child) : InkWell(onTap: onTap, child: Padding(padding: padding, child: child)),
+        child: onTap == null
+            ? Padding(padding: padding, child: child)
+            : Pressable(
+                onTap: onTap,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: Padding(padding: padding, child: child),
+              ),
       ),
     );
   }

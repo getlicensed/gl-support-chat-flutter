@@ -412,7 +412,9 @@ class ArticleReactions extends StatelessWidget {
   }
 }
 
-/// One face to tap: 56 points square, named for a screen reader.
+/// One face to tap: 56 points square, named for a screen reader. Chosen,
+/// it grows and the others turn grey and fade ([ChoiceFace]), with a light
+/// tick of the phone.
 class _Face extends StatelessWidget {
   const _Face({required this.emoji, required this.label, required this.chosen, required this.faded, required this.onTap});
 
@@ -422,35 +424,23 @@ class _Face extends StatelessWidget {
   final bool faded;
   final VoidCallback onTap;
 
-  static const time = Duration(milliseconds: 200);
-
   @override
   Widget build(BuildContext context) {
-    // Even with less motion asked for, as Intercom's: see [fullTime].
-    final time = fullTime(_Face.time);
     return Semantics(
       button: true,
       selected: chosen,
       label: label,
       excludeSemantics: true,
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onTap,
+      child: Pressable(
+        shape: const CircleBorder(),
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
         child: SizedBox(
           width: 56,
           height: 56,
-          child: Center(
-            child: AnimatedScale(
-              scale: chosen ? 1.3 : 1,
-              duration: time,
-              curve: Curves.easeOutBack,
-              child: AnimatedOpacity(
-                opacity: faded ? 0.4 : 1,
-                duration: time,
-                child: Text(emoji, style: const TextStyle(fontSize: 28)),
-              ),
-            ),
-          ),
+          child: Center(child: ChoiceFace(emoji: emoji, chosen: chosen, faded: faded, size: 28)),
         ),
       ),
     );

@@ -714,7 +714,7 @@ void main() {
       await close(tester, host);
     });
 
-    testWidgets('login, then present: Home once the sign-in and the list are in, signed in once; the conversation follows behind a spinner', (tester) async {
+    testWidgets('login, then present: Home once the sign-in and the list are in, signed in once; the conversation follows behind its skeleton', (tester) async {
       final host = await app(tester);
       expect(await GLSupportChat.login(ayesha), isTrue);
       final auths = count('POST /widget/auth');
@@ -728,14 +728,14 @@ void main() {
       await tester.tap(find.text('Send us a message'));
       await settle(tester);
       final page = find.byType(ConversationPage);
-      expect(find.descendant(of: page, matching: find.byType(CircularProgressIndicator)), findsOneWidget);
+      expect(find.descendant(of: page, matching: find.byType(ThreadSkeleton)), findsOneWidget, reason: 'its shape, not a spinner (0.4.8)');
       expect(find.text('How do I renew my licence?'), findsNothing, reason: 'no opening chips before the thread is known');
       expect(find.descendant(of: page, matching: find.byType(TextField)), findsNothing, reason: 'no composer before the workflow is known');
 
       server.release();
       await settle(tester);
       expect(find.text('Where is my certificate?'), findsOneWidget);
-      expect(find.descendant(of: page, matching: find.byType(CircularProgressIndicator)), findsNothing);
+      expect(find.descendant(of: page, matching: find.byType(ThreadSkeleton)), findsNothing);
       expect(find.descendant(of: page, matching: find.byType(TextField)), findsOneWidget);
       await close(tester, host);
 
@@ -867,7 +867,8 @@ void main() {
       await settle(tester);
       final image = find.byWidgetPredicate((w) => w is Image && _memory(w.image));
       expect(image, findsOneWidget);
-      tester.widget<GestureDetector>(find.ancestor(of: image, matching: find.byType(GestureDetector)).first).onTap!();
+      // The press laid over the photo (0.4.8).
+      tester.widget<InkWell>(find.descendant(of: find.ancestor(of: image, matching: find.byType(Stack)).first, matching: find.byWidgetPredicate((w) => w is InkWell))).onTap!();
       await settle(tester);
       expect(find.byType(InteractiveViewer), findsOneWidget, reason: 'her photo, full screen');
       await signInScreen();
@@ -892,7 +893,8 @@ void main() {
       await tester.tap(find.text('Send us a message'));
       await settle(tester);
       final image = find.byWidgetPredicate((w) => w is Image && _memory(w.image));
-      tester.widget<GestureDetector>(find.ancestor(of: image, matching: find.byType(GestureDetector)).first).onTap!();
+      // The press laid over the photo (0.4.8).
+      tester.widget<InkWell>(find.descendant(of: find.ancestor(of: image, matching: find.byType(Stack)).first, matching: find.byWidgetPredicate((w) => w is InkWell))).onTap!();
       await settle(tester);
       expect(find.byType(InteractiveViewer), findsOneWidget);
       await GLSupportChat.logout();

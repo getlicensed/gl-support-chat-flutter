@@ -117,7 +117,7 @@ void main() {
     // typing is allowed.
     expect(find.byType(TextField), findsNothing);
     expect(find.text('Choose an option above'), findsOneWidget);
-    expect(tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.add_photo_alternate_outlined)).onPressed, isNull);
+    expect(tester.widget<Pressable>(find.ancestor(of: find.byIcon(Icons.add_photo_alternate_outlined), matching: find.byType(Pressable))).onTap, isNull);
     await tester.tap(find.text('CCTV'));
     await tester.pump();
     expect(channel.requests.last.$1, 'workflow:choose');

@@ -105,12 +105,12 @@ class _ConversationPageState extends State<ConversationPage> {
     for (final m in c.live) {
       if (m.fromVisitor) mine++;
     }
-    // The first open shows Home before the open conversation is in: a
-    // spinner until it is, never the opening chips flashing before it;
-    // then the thread fades in over it.
+    // The first open shows Home before the open conversation is in: the
+    // thread's skeleton until it is, never the opening chips flashing
+    // before it; then the thread fades in over it.
     return _FadeSwitch(
       child: !c.liveLoaded && c.live.isEmpty && c.outgoing.isEmpty
-          ? const Center(key: ValueKey<String>('loading'), child: CircularProgressIndicator())
+          ? const ThreadSkeleton(key: ValueKey<String>('loading'))
           : _Thread(
               key: const ValueKey<String>('thread'),
               rows: _liveRows(context, c, _cache),
@@ -150,7 +150,7 @@ class _ConversationPageState extends State<ConversationPage> {
             ),
           );
         } else {
-          shown = const Center(key: ValueKey<String>('loading'), child: CircularProgressIndicator());
+          shown = const ThreadSkeleton(key: ValueKey<String>('loading'));
         }
         return _FadeSwitch(child: shown);
       },
@@ -1141,8 +1141,9 @@ class _NewMessagePill extends StatelessWidget {
         color: brand.primary,
         elevation: 3,
         shape: const StadiumBorder(),
-        child: InkWell(
-          customBorder: const StadiumBorder(),
+        child: Pressable(
+          shape: const StadiumBorder(),
+          onBrand: true,
           onTap: onTap,
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: RoundIconButton.minTarget),
@@ -1545,7 +1546,17 @@ class _Bubble extends StatelessWidget {
     final parts = <(double, Widget)>[
       if (bot && meta?.imageUrl != null) (8, _BotImage(url: meta!.imageUrl!)),
       for (final a in m.attachments) (6, _AttachmentView(attachment: a, mine: mine, framed: !onlyMedia)),
-      if (text.isNotEmpty) (6, _RichText(text, color: fg, linkColor: mine ? fg : brand.primary)),
+      // A long press copies the words. On the words alone: over the whole
+      // bubble it held back the taps of a card or a photo in it.
+      if (text.isNotEmpty)
+        (6, GestureDetector(
+          onLongPress: () {
+            HapticFeedback.lightImpact();
+            Clipboard.setData(ClipboardData(text: text));
+            ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Copied')));
+          },
+          child: _RichText(text, color: fg, linkColor: mine ? fg : brand.primary),
+        )),
       if (bot && meta?.articleSlug != null && context.messenger.session?.helpBaseUrl != null)
         (8, _InBubbleCard(
           icon: Icons.description_outlined,
@@ -1566,16 +1577,7 @@ class _Bubble extends StatelessWidget {
         parts[i].$2,
       ],
     ];
-    final bubble = _BubbleBox(mine: mine, pos: pos, tight: onlyMedia, children: children);
-    return GestureDetector(
-      onLongPress: text.isEmpty
-          ? null
-          : () {
-              Clipboard.setData(ClipboardData(text: text));
-              ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Copied')));
-            },
-      child: bubble,
-    );
+    return _BubbleBox(mine: mine, pos: pos, tight: onlyMedia, children: children);
   }
 }
 
@@ -1686,8 +1688,14 @@ class _MineRow extends StatelessWidget {
         ),
       );
       if (!o.failed) {
+        _buzzed[o] = null;
         line = const _SendingLine(key: ValueKey<String>('sending'));
       } else {
+        // A light tap of the phone as it fails, once a failure.
+        if (_buzzed[o] == null) {
+          _buzzed[o] = true;
+          HapticFeedback.lightImpact();
+        }
         // The server's own sentence ("wait 9s", "too long") says why.
         reason = o.error == _noReason ? null : o.error;
         // Wraps rather than overflow, at a large text size.
@@ -1740,6 +1748,9 @@ class _MineRow extends StatelessWidget {
     );
   }
 }
+
+/// The messages on their way whose failure the phone has said, by a tap.
+final _buzzed = Expando<bool>('failure said');
 
 /// A word to tap in a status line ("Retry"): the line's size, with the
 /// room around it taking the tap too.
@@ -1832,6 +1843,60 @@ class _BotImage extends StatelessWidget {
   }
 }
 
+/// A thread still to come: bubbles at the foot of the screen, shimmering,
+/// the team's on the left beside a face and the customer's on the right —
+/// not a spinner — so what comes takes the place of something its shape.
+class ThreadSkeleton extends StatelessWidget {
+  const ThreadSkeleton({super.key});
+
+  /// Each bubble: on the customer's side or not, its share of the width,
+  /// its height.
+  static const _bubbles = <(bool, double, double)>[
+    (false, 0.62, 58),
+    (true, 0.46, 40),
+    (false, 0.52, 40),
+    (true, 0.34, 40),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Loading the conversation',
+      child: ExcludeSemantics(
+        child: Shimmer(
+          // A list that does not scroll, from the foot up: in a short
+          // space (a phone on its side, the keyboard up) the top ones go.
+          child: LayoutBuilder(
+            builder: (context, box) => ListView(
+              reverse: true,
+              primary: false,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+              children: [
+                for (var i = _bubbles.length - 1; i >= 0; i--)
+                  Padding(
+                    padding: EdgeInsets.only(top: i == 0 ? 0 : _groupGap),
+                    child: Row(
+                      mainAxisAlignment: _bubbles[i].$1 ? MainAxisAlignment.end : MainAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        if (!_bubbles[i].$1) ...[
+                          const SkeletonBar(width: _faceSize, height: _faceSize),
+                          const SizedBox(width: _faceColumn - _faceSize),
+                        ],
+                        SkeletonBar(width: (box.maxWidth - 32) * _bubbles[i].$2, height: _bubbles[i].$3),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// The thread's first load, a past conversation's: what comes fades in
 /// over what stood for it, in 200 ms.
 class _FadeSwitch extends StatelessWidget {
@@ -1856,13 +1921,12 @@ class _InBubbleCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Material(
-        color: Palette.input,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: const BorderSide(color: Palette.border)),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
+    // Its own Material: the ripple is drawn on it, over the bubble's grey.
+    return Material(
+      color: Palette.input,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: const BorderSide(color: Palette.border)),
+      child: Pressable(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           onTap: onTap,
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: RoundIconButton.minTarget),
@@ -1887,7 +1951,6 @@ class _InBubbleCard extends StatelessWidget {
             ),
           ),
         ),
-      ),
     );
   }
 }
@@ -2004,7 +2067,23 @@ class _Photo extends StatelessWidget {
     );
     if (framed) box = ClipRRect(borderRadius: BorderRadius.circular(radius), child: box);
     if (image == null) return box;
-    return GestureDetector(onTap: () => _view(context, image), child: box);
+    // The press over the picture, on a Material of its own laid on top:
+    // drawn under it, a ripple would be hidden by the photo.
+    return Stack(
+      children: [
+        box,
+        Positioned.fill(
+          child: Material(
+            type: MaterialType.transparency,
+            child: Pressable(
+              onTap: () => _view(context, image),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius)),
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -2017,21 +2096,28 @@ class _FileChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final fg = mine ? context.brand.onPrimary : Palette.text;
-    return InkWell(
-      onTap: onTap,
-      // At least 44 points tall: the way to open a letter the team sends.
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: RoundIconButton.minTarget),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          widthFactor: 1,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.attach_file, size: 16, color: fg),
-              const SizedBox(width: 4),
-              Flexible(child: Text(name, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 14, color: fg))),
-            ],
+    // Its own Material: the ripple shows over the bubble's colour, in the
+    // chip's rounded shape.
+    return Material(
+      type: MaterialType.transparency,
+      child: Pressable(
+        onTap: onTap,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        onBrand: mine,
+        // At least 44 points tall: the way to open a letter the team sends.
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: RoundIconButton.minTarget),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            widthFactor: 1,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.attach_file, size: 16, color: fg),
+                const SizedBox(width: 4),
+                Flexible(child: Text(name, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 14, color: fg))),
+              ],
+            ),
           ),
         ),
       ),
@@ -2464,6 +2550,13 @@ class _Chip extends StatelessWidget {
   final bool whatsapp;
   final bool enabled;
 
+  static const corners = BorderRadius.only(
+    topLeft: Radius.circular(16),
+    topRight: Radius.circular(16),
+    bottomLeft: Radius.circular(16),
+    bottomRight: Radius.circular(4),
+  );
+
   @override
   Widget build(BuildContext context) {
     final brand = context.brand;
@@ -2475,18 +2568,17 @@ class _Chip extends StatelessWidget {
       duration: fullTime(Reveal.time),
       child: Material(
         color: whatsapp ? Colors.white : brand.light,
-        shape: RoundedRectangleBorder(
-          side: BorderSide(color: whatsapp ? Palette.whatsapp : brand.ring),
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(16),
-            topRight: Radius.circular(16),
-            bottomLeft: Radius.circular(16),
-            bottomRight: Radius.circular(4),
-          ),
-        ),
-        child: InkWell(
-          onTap: enabled ? onTap : null,
-          customBorder: const RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(16))),
+        shape: RoundedRectangleBorder(side: BorderSide(color: whatsapp ? Palette.whatsapp : brand.ring), borderRadius: _Chip.corners),
+        // The press in the chip's own shape, its tight corner too; a light
+        // tick of the phone, as a choice made.
+        child: Pressable(
+          onTap: enabled
+              ? () {
+                  HapticFeedback.selectionClick();
+                  onTap();
+                }
+              : null,
+          shape: const RoundedRectangleBorder(borderRadius: _Chip.corners),
           // At least 44 points tall: a chip is the thing most often tapped.
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: RoundIconButton.minTarget),
@@ -2670,101 +2762,108 @@ class _CsatCardState extends State<CsatCard> {
     final rating = answer?.rating;
     return Container(
       margin: const EdgeInsets.only(top: 4, bottom: 12),
-      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: Palette.border)),
-      child: Column(
-        children: [
-          Text(
-            rating == null ? widget.title : 'Thank you for your feedback',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Palette.text),
-          ),
-          const SizedBox(height: 10),
-          Semantics(
-            label: 'Your rating',
-            child: Row(
-              children: [
-                // Five equal shares of the card, so a large text size never
-                // squeezes one; a label that still does not fit shrinks
-                // rather than break mid-word ("Terri-ble").
-                for (final (value, emoji, label) in _faces)
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 2),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTap: () => c.rate(widget.ratingId, value),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          decoration: BoxDecoration(
-                            color: rating == value ? brand.light : null,
-                            border: Border.all(color: rating == value ? brand.primary : Colors.transparent),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Column(
-                            children: [
-                              Opacity(
-                                opacity: rating == null || rating == value ? 1 : 0.35,
-                                child: FittedBox(fit: BoxFit.scaleDown, child: Text(emoji, style: const TextStyle(fontSize: 26))),
+      // A Material of its own over the card's white: the ripple under a
+      // face was drawn on the page's, under the white, and never showed.
+      child: Material(
+        type: MaterialType.transparency,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            children: [
+              Text(
+                rating == null ? widget.title : 'Thank you for your feedback',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Palette.text),
+              ),
+              const SizedBox(height: 10),
+              Semantics(
+                label: 'Your rating',
+                child: Row(
+                  children: [
+                    // Five equal shares of the card, so a large text size never
+                    // squeezes one; a label that still does not fit shrinks
+                    // rather than break mid-word ("Terri-ble").
+                    // The faces behave as the article's do: the one chosen grows
+                    // a little, the others turn grey and fade back.
+                    for (final (value, emoji, label) in _faces)
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          child: Pressable(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            onTap: () {
+                              HapticFeedback.selectionClick();
+                              c.rate(widget.ratingId, value);
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Column(
+                                children: [
+                                  FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: ChoiceFace(emoji: emoji, chosen: rating == value, faded: rating != null && rating != value, size: 26),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Text(label, maxLines: 1, softWrap: false, style: const TextStyle(fontSize: 11, color: Palette.muted)),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(height: 2),
-                              FittedBox(
-                                fit: BoxFit.scaleDown,
-                                child: Text(label, maxLines: 1, softWrap: false, style: const TextStyle(fontSize: 11, color: Palette.muted)),
-                              ),
-                            ],
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          if (rating != null && answer!.commentState != 'sent') ...[
-            const SizedBox(height: 10),
-            TextField(
-              controller: _comment,
-              minLines: 2,
-              maxLines: 4,
-              maxLength: 1000,
-              onChanged: (_) => setState(() {}),
-              onTapOutside: dismissKeyboard,
-              style: fieldText,
-              cursorColor: brand.primary,
-              decoration: InputDecoration(
-                hintText: 'Anything you would like to add? (optional)',
-                hintStyle: const TextStyle(color: Palette.hint),
-                counterText: '',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: brand.primary, width: 1.5)),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              // Inside the field's tap region: Send is not lost to the
-              // keyboard going down under the finger.
-              child: TextFieldTapRegion(
-                child: FilledButton(
-                  style: FilledButton.styleFrom(backgroundColor: brand.primary, foregroundColor: brand.onPrimary),
-                  onPressed: answer.commentState == 'sending' || _comment.text.trim().isEmpty ? null : () => c.comment(widget.ratingId, _comment.text),
-                  child: const Text('Send'),
+                  ],
                 ),
               ),
-            ),
-          ],
-          if (rating != null && answer!.commentState == 'sent')
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                answer.comment.isEmpty ? 'We read every one.' : '“${answer.comment}” — thank you, we read every one.',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 13, color: Palette.muted),
-              ),
-            ),
-          if (answer?.error != null) Padding(padding: const EdgeInsets.only(top: 6), child: _ErrorLine(answer!.error!)),
-        ],
+              if (rating != null && answer!.commentState != 'sent') ...[
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _comment,
+                  minLines: 2,
+                  maxLines: 4,
+                  maxLength: 1000,
+                  onChanged: (_) => setState(() {}),
+                  onTapOutside: dismissKeyboard,
+                  style: fieldText,
+                  cursorColor: brand.primary,
+                  decoration: InputDecoration(
+                    hintText: 'Anything you would like to add? (optional)',
+                    hintStyle: const TextStyle(color: Palette.hint),
+                    counterText: '',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: brand.primary, width: 1.5)),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  // Inside the field's tap region: Send is not lost to the
+                  // keyboard going down under the finger.
+                  child: TextFieldTapRegion(
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(backgroundColor: brand.primary, foregroundColor: brand.onPrimary),
+                      onPressed: answer.commentState == 'sending' || _comment.text.trim().isEmpty ? null : () => c.comment(widget.ratingId, _comment.text),
+                      child: const Text('Send'),
+                    ),
+                  ),
+                ),
+              ],
+              if (rating != null && answer!.commentState == 'sent')
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Text(
+                    answer.comment.isEmpty ? 'We read every one.' : '“${answer.comment}” — thank you, we read every one.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 13, color: Palette.muted),
+                  ),
+                ),
+              if (answer?.error != null) Padding(padding: const EdgeInsets.only(top: 6), child: _ErrorLine(answer!.error!)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -2834,7 +2933,7 @@ class _EmailBarState extends State<_EmailBar> {
       child: TextFieldTapRegion(
         child: Material(
           color: Palette.input,
-          child: InkWell(
+          child: Pressable(
             onTap: _openForm,
             child: Container(
               constraints: const BoxConstraints(minHeight: RoundIconButton.minTarget),
@@ -3069,11 +3168,7 @@ class _ComposerState extends State<_Composer> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            IconButton(
-              tooltip: 'Send a photo',
-              onPressed: _attach,
-              icon: const Icon(Icons.add_photo_alternate_outlined, color: Palette.muted),
-            ),
+            _PhotoButton(onTap: _attach),
             Expanded(
               child: TextField(
                 controller: _text,
@@ -3095,16 +3190,19 @@ class _ComposerState extends State<_Composer> {
             Semantics(
               button: true,
               label: 'Send',
+              // Its own Material, the circle painted on it as Ink: Android's
+              // ripple shows over the circle, not under the composer's white.
               child: Material(
-                color: canSend ? brand.primary : Palette.fill,
-                shape: const CircleBorder(),
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: canSend ? _send : null,
-                  child: SizedBox(
-                    width: RoundIconButton.minTarget,
-                    height: RoundIconButton.minTarget,
-                    child: Icon(Icons.arrow_upward, color: canSend ? brand.onPrimary : Palette.faint),
+                type: MaterialType.transparency,
+                child: SizedBox(
+                  width: RoundIconButton.minTarget,
+                  height: RoundIconButton.minTarget,
+                  child: Pressable(
+                    onTap: canSend ? _send : null,
+                    shape: const CircleBorder(),
+                    inner: const Size.square(_SendCircle.size),
+                    onBrand: canSend,
+                    child: _SendCircle(ready: canSend, brand: brand),
                   ),
                 ),
               ),
@@ -3126,6 +3224,66 @@ class _ComposerState extends State<_Composer> {
       ),
     );
   }
+}
+
+/// The photo button beside the message box: 48 points, its press in a
+/// 40-point circle, one recogniser (its name has no long press to wait for).
+class _PhotoButton extends StatelessWidget {
+  const _PhotoButton({required this.onTap});
+
+  /// Null while typing waits on something above: greyed, and takes nothing.
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        enabled: onTap != null,
+        label: 'Send a photo',
+        child: Tooltip(
+          message: 'Send a photo',
+          triggerMode: TooltipTriggerMode.manual,
+          excludeFromSemantics: true,
+          child: Material(
+            type: MaterialType.transparency,
+            child: SizedBox.square(
+              dimension: 48,
+              child: Pressable(
+                onTap: onTap,
+                shape: const CircleBorder(),
+                inner: const Size.square(40),
+                child: Icon(Icons.add_photo_alternate_outlined, color: onTap == null ? Palette.faint : Palette.muted),
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
+/// Send: a 36-point circle in its 44-point target — grey while there is
+/// nothing to send, the brand colour once there is, turning over 180 ms.
+class _SendCircle extends StatelessWidget {
+  const _SendCircle({required this.ready, required this.brand});
+  final bool ready;
+  final BrandColors brand;
+
+  static const size = 36.0;
+  static const turn = Duration(milliseconds: 180);
+
+  @override
+  Widget build(BuildContext context) => Center(
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(end: ready ? 1 : 0),
+          // Even with less motion asked for: see [fullTime].
+          duration: fullTime(turn),
+          curve: Curves.easeOut,
+          builder: (_, t, __) => Ink(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(color: Color.lerp(Palette.fill, brand.primary, t), shape: BoxShape.circle),
+            child: Icon(Icons.arrow_upward, size: 20, color: Color.lerp(Palette.faint, brand.onPrimary, t)),
+          ),
+        ),
+      );
 }
 
 /// The message box's look, for the real composer and the locked one alike.
@@ -3166,7 +3324,7 @@ class _LockedComposer extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            const IconButton(tooltip: 'Send a photo', onPressed: null, icon: Icon(Icons.add_photo_alternate_outlined)),
+            const _PhotoButton(onTap: null),
             Expanded(
               child: InputDecorator(
                 decoration: _composerDecoration(brand, hint, enabled: false),
@@ -3176,14 +3334,13 @@ class _LockedComposer extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 6),
-            const ExcludeSemantics(
+            ExcludeSemantics(
               child: Material(
-                color: Palette.fill,
-                shape: CircleBorder(),
+                type: MaterialType.transparency,
                 child: SizedBox(
                   width: RoundIconButton.minTarget,
                   height: RoundIconButton.minTarget,
-                  child: Icon(Icons.arrow_upward, color: Palette.faint),
+                  child: _SendCircle(ready: false, brand: brand),
                 ),
               ),
             ),

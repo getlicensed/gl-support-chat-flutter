@@ -81,18 +81,8 @@ class _MessengerTabsState extends State<MessengerTabs> {
             destinations: [
               const NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
               NavigationDestination(
-                icon: Badge(
-                  isLabelVisible: c.totalUnread > 0,
-                  backgroundColor: Palette.danger,
-                  label: Text(c.totalUnread > 9 ? '9+' : '${c.totalUnread}'),
-                  child: const Icon(Icons.chat_bubble_outline),
-                ),
-                selectedIcon: Badge(
-                  isLabelVisible: c.totalUnread > 0,
-                  backgroundColor: Palette.danger,
-                  label: Text(c.totalUnread > 9 ? '9+' : '${c.totalUnread}'),
-                  child: const Icon(Icons.chat_bubble),
-                ),
+                icon: _TabBadge(count: c.totalUnread, child: const Icon(Icons.chat_bubble_outline)),
+                selectedIcon: _TabBadge(count: c.totalUnread, child: const Icon(Icons.chat_bubble)),
                 label: 'Messages',
               ),
               const NavigationDestination(icon: Icon(Icons.help_outline), selectedIcon: Icon(Icons.help), label: 'Help'),
@@ -100,6 +90,57 @@ class _MessengerTabsState extends State<MessengerTabs> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The unread count on the Messages tab: a red pill at the icon's corner
+/// that scales in over 200 ms (with a slight overshoot) when replies come
+/// and out when they are read, rather than appear and vanish in a frame.
+class _TabBadge extends StatefulWidget {
+  const _TabBadge({required this.count, required this.child});
+  final int count;
+  final Widget child;
+
+  static const time = Duration(milliseconds: 200);
+
+  @override
+  State<_TabBadge> createState() => _TabBadgeState();
+}
+
+class _TabBadgeState extends State<_TabBadge> {
+  /// What it last said: kept while it scales out.
+  late int _said = widget.count;
+
+  @override
+  Widget build(BuildContext context) {
+    final n = widget.count;
+    if (n > 0) _said = n;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        widget.child,
+        PositionedDirectional(
+          top: -4,
+          start: 14,
+          child: AnimatedScale(
+            scale: n > 0 ? 1 : 0,
+            // Even with less motion asked for, as Intercom's: see [fullTime].
+            duration: fullTime(_TabBadge.time),
+            curve: n > 0 ? Curves.easeOutBack : Curves.easeIn,
+            child: ExcludeSemantics(
+              excluding: n == 0,
+              child: Container(
+                constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                alignment: Alignment.center,
+                decoration: const ShapeDecoration(color: Palette.danger, shape: StadiumBorder()),
+                child: Text(_said > 9 ? '9+' : '$_said', style: const TextStyle(fontSize: 11, height: 1.2, fontWeight: FontWeight.w600, color: Colors.white)),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -207,8 +248,11 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
                       opacity: i == current ? _comes : (i == leaving ? _goes : kAlwaysCompleteAnimation),
                       child: ScaleTransition(
                         scale: i == current ? _scale : kAlwaysCompleteAnimation,
-                        // Messages and Help have no background of their own: white.
-                        child: ColoredBox(color: Colors.white, child: widget.children[i]),
+                        // Messages and Help have no background of their own:
+                        // white — under a Material of the tab's own, so the
+                        // ink under a finger is drawn over the white, not on
+                        // the Scaffold's Material beneath it.
+                        child: ColoredBox(color: Colors.white, child: Material(type: MaterialType.transparency, child: widget.children[i])),
                       ),
                     ),
                   ),
@@ -738,8 +782,8 @@ class _HomeHelpCardState extends State<_HomeHelpCard> with SingleTickerProviderS
           for (var i = 0; i < shown.length; i++)
             FadeTransition(
               opacity: _row[i],
-              child: InkWell(
-                borderRadius: BorderRadius.circular(10),
+              child: Pressable(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 onTap: () => openArticle(context, shown[i].slug, title: shown[i].title),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(minHeight: articleRowHeight),
@@ -767,10 +811,12 @@ class _HomeHelpCardState extends State<_HomeHelpCard> with SingleTickerProviderS
           Semantics(
             button: onSearch != null,
             label: 'Search for help',
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
+            child: Pressable(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               onTap: onSearch,
-              child: Container(
+              // Ink, not a Container: its grey is painted on the card's
+              // Material, under the ripple, not over it.
+              child: Ink(
                 height: 46,
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 decoration: BoxDecoration(color: const Color(0xFFF1F3F4), borderRadius: BorderRadius.circular(12)),
@@ -831,9 +877,10 @@ class MessagesTab extends StatelessWidget {
     final brand = c.brand;
     final Widget body;
     if (!c.conversationsLoaded) {
-      body = const Center(child: CircularProgressIndicator());
+      body = const MessagesSkeleton(key: ValueKey<String>('skeleton'));
     } else if (c.conversations.isEmpty) {
       body = Center(
+        key: const ValueKey<String>('empty'),
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Column(
@@ -849,7 +896,11 @@ class MessagesTab extends StatelessWidget {
         ),
       );
     } else {
+      // The rows as they are now: a list fading out keeps building from
+      // what it was given, not from the controller's list as it changes.
+      final rows = List<ConversationSummary>.of(c.conversations);
       body = RefreshIndicator(
+        key: const ValueKey<String>('list'),
         color: brand.primary,
         onRefresh: c.refreshConversations,
         child: ListView.separated(
@@ -858,12 +909,12 @@ class MessagesTab extends StatelessWidget {
           primary: false,
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: const EdgeInsets.only(bottom: 96),
-          itemCount: c.conversations.length,
+          itemCount: rows.length,
           separatorBuilder: (_, __) => const Divider(height: 1, indent: 72, color: Color(0xFFF1F3F4)),
           itemBuilder: (context, i) {
-            final conv = c.conversations[i];
+            final conv = rows[i];
             final unread = conv.unreadCount > 0;
-            return InkWell(
+            return Pressable(
               onTap: () => openConversation(context, conv),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
@@ -913,7 +964,15 @@ class MessagesTab extends StatelessWidget {
           Expanded(
             child: Stack(
               children: [
-                Positioned.fill(child: body),
+                // The skeleton gives way to the list in a 200 ms fade.
+                Positioned.fill(
+                  child: AnimatedSwitcher(
+                    // Even with less motion asked for, as Intercom's: see [fullTime].
+                    duration: fullTime(const Duration(milliseconds: 200)),
+                    layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
+                    child: body,
+                  ),
+                ),
                 Positioned(
                   left: 0,
                   right: 0,
@@ -937,6 +996,53 @@ class MessagesTab extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The Messages list still to come: five rows of a face and two lines,
+/// shimmering, the height the rows will be — not a spinner.
+class MessagesSkeleton extends StatelessWidget {
+  const MessagesSkeleton({super.key});
+
+  static const _widths = <(double, double)>[(0.62, 0.36), (0.5, 0.3), (0.7, 0.4), (0.44, 0.28), (0.58, 0.34)];
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Loading your messages',
+      child: ExcludeSemantics(
+        child: Shimmer(
+          // A list that does not scroll: in a short space the last rows go.
+          child: LayoutBuilder(
+            builder: (context, box) => ListView(
+              primary: false,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: EdgeInsets.zero,
+              children: [
+                for (final (top, under) in _widths)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                    child: Row(
+                      children: [
+                        const SkeletonBar(width: 40, height: 40),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            TextBar(style: const TextStyle(fontSize: 15), width: (box.maxWidth - 72) * top),
+                            const SizedBox(height: 3),
+                            TextBar(style: const TextStyle(fontSize: 13), width: (box.maxWidth - 72) * under),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1061,8 +1167,8 @@ class _HelpTabState extends State<HelpTab> {
                   note(q.isEmpty ? 'No articles published yet.' : 'No articles match “$q”.')
                 else
                   for (final a in results)
-                    InkWell(
-                      borderRadius: BorderRadius.circular(10),
+                    Pressable(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       onTap: () => openArticle(context, a.slug, title: a.title),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
