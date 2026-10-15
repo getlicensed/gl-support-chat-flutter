@@ -123,11 +123,20 @@ void main() {
           final t = ((i + 1) * 16 / 400).clamp(0.0, 1.0);
           expect(ys[i], closeTo(sheetTop + sheetHeight * (1 - messengerOpenCurve.transform(t)), 1.5), reason: 'frame ${i + 1}');
         }
-        expect(ys.first, greaterThan(sheetTop + sheetHeight * 0.5), reason: 'the first frame is still in the lower half: it rises, it does not appear');
-        expect(ys[6], lessThan(sheetTop + sheetHeight * 0.3), reason: 'most of the way up within about 100 ms');
-        for (var i = 1; i < ys.length; i++) {
-          expect(ys[i], lessThanOrEqualTo(ys[i - 1]), reason: 'never back down on the way up');
+        // It rises; it does not appear. 0.4.6's first try (Material's
+        // emphasised deceleration) went 37% of the way in the first frame.
+        final travel = <double>[for (final y in ys) (sheetTop + sheetHeight - y) / sheetHeight];
+        expect(travel.first, lessThanOrEqualTo(0.10), reason: 'frame 1 moves at most a tenth of the way: ${travel.first}');
+        expect(travel.first, greaterThan(0), reason: 'but it has started');
+        var biggest = travel.first;
+        for (var i = 1; i < travel.length; i++) {
+          expect(travel[i], greaterThanOrEqualTo(travel[i - 1]), reason: 'frame ${i + 1}: never back down, no overshoot');
+          final step = travel[i] - travel[i - 1];
+          if (step > biggest) biggest = step;
         }
+        expect(biggest, lessThanOrEqualTo(0.15), reason: 'no frame jumps more than 15% of the way: $biggest');
+        final settledAt = (travel.indexWhere((t) => t >= 1) + 1) * 16;
+        expect(settledAt, inInclusiveRange(1, 450), reason: 'settled by about 450 ms (at $settledAt)');
         expect(ys.last, sheetTop, reason: 'a strip of the app shows above it');
         expect(scrim(tester), messengerScrim, reason: 'the app behind dimmed 40%');
         final clip = tester.widget<ClipRRect>(find.ancestor(of: find.byType(GLSupportChatPage), matching: find.byType(ClipRRect)).first);

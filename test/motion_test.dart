@@ -420,7 +420,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       final early = sheetTop(tester);
       expect(early, inExclusiveRange(57, 844));
-      expect(early, lessThan(57 + 787 * 0.3), reason: 'emphasised deceleration: most of the way up in the first quarter');
+      expect(early, lessThan(57 + 787 * 0.5), reason: 'a spring from rest: past half way within 100 ms');
       await tester.pump(const Duration(milliseconds: 300));
       expect(sheetTop(tester), 57, reason: 'below the status bar and a 10-point strip of the app');
       await settle(tester);

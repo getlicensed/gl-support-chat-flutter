@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -168,6 +169,38 @@ void main() {
     await shoot(t, 'sheet-mid-open');
     await t.pump(const Duration(seconds: 1));
     await shoot(t, 'sheet-up');
+  }, skip: !enabled);
+
+  testWidgets('sheet first frames', (t) async {
+    phone(t);
+    final c = controllerFor(seeded(), FakeChannel());
+    await t.pumpWidget(app((_) => GLSupportChatPage(controller: c)));
+    await t.tap(find.text('Support'));
+    await t.pump();
+    // The first six frames of the rise, side by side.
+    final frames = <ui.Image>[];
+    for (var i = 0; i < 6; i++) {
+      await t.pump(const Duration(milliseconds: 16));
+      frames.add((await t.runAsync(() => captureImage(find.byKey(const ValueKey<String>('screen')).evaluate().single)))!);
+    }
+    t.view.physicalSize = const Size(390 * 6 * 2 + 5 * 8 * 2, 844 * 2);
+    await t.pumpWidget(RepaintBoundary(
+      key: const ValueKey<String>('screen'),
+      child: ColoredBox(
+        color: const Color(0xFF000000),
+        child: Row(textDirection: TextDirection.ltr, children: [
+          for (var i = 0; i < frames.length; i++) ...[
+            if (i > 0) const SizedBox(width: 8),
+            RawImage(image: frames[i], width: 390, height: 844),
+          ],
+        ]),
+      ),
+    ));
+    await shoot(t, 'sheet-first-frames');
+    for (final f in frames) {
+      f.dispose();
+    }
+    await t.pumpWidget(const SizedBox());
   }, skip: !enabled);
 
   testWidgets('home skeleton', (t) async {

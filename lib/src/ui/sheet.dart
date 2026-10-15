@@ -13,16 +13,36 @@ import 'common.dart';
 // conversation, an article) are routes of their own, framed the same way,
 // so they slide in within the sheet and ride up and down with it.
 
-/// How long the sheet takes to come up, and its curve: Material's
-/// emphasised deceleration — most of the way in the first third, then it
-/// settles.
+/// How long the sheet takes to come up, and its curve: a critically damped
+/// spring from rest, as iOS's sheets rise. It gathers speed over the first
+/// frames (4% of the way in the first, never more than 12% in one) and
+/// settles without overshoot. Material's emphasised deceleration, tried
+/// first, covered 37% in the first frame: it still read as appearing at once.
 const messengerOpenTime = Duration(milliseconds: 400);
-const messengerOpenCurve = Cubic(0.05, 0.7, 0.1, 1);
+const messengerOpenCurve = SettlingSpring(8);
+
+/// The same spring for a released drag: the sheet springs back up, or goes
+/// down, with the feel it came up with (its natural frequency is the open
+/// curve's: 8 over 400 ms is 20 a second).
+final messengerSpring = SpringDescription.withDampingRatio(mass: 1, stiffness: 400);
 
 /// How long it takes to go down, and its curve: Material's emphasised
 /// acceleration, as a time curve — it leaves gently and is quickly gone.
 const messengerCloseTime = Duration(milliseconds: 250);
 const messengerCloseCurve = Cubic(0.3, 0, 0.8, 0.15);
+
+/// A critically damped spring released from rest, as a curve over a fixed
+/// time: [stiffness] natural-frequency radians over the whole of it, scaled
+/// so it lands exactly on 1. Monotonic: it never overshoots.
+class SettlingSpring extends Curve {
+  const SettlingSpring(this.stiffness);
+  final double stiffness;
+
+  double _at(double t) => 1 - (1 + stiffness * t) * math.exp(-stiffness * t);
+
+  @override
+  double transformInternal(double t) => _at(t) / _at(1);
+}
 
 /// Behind the sheet: the app, dimmed.
 const messengerScrim = Color(0x66000000);
@@ -166,12 +186,12 @@ class MessengerSheet {
       if (still) {
         c.value = 0;
       } else {
-        c.fling(velocity: -math.max(1.0, velocity / h));
+        c.fling(velocity: -math.max(1.0, velocity / h), springDescription: messengerSpring);
       }
     } else if (still) {
       c.value = 1;
     } else {
-      c.fling(velocity: math.max(1.0, -velocity / h));
+      c.fling(velocity: math.max(1.0, -velocity / h), springDescription: messengerSpring);
     }
     if (!c.isAnimating) {
       _stopGesture();
@@ -212,7 +232,7 @@ class _SheetScope extends InheritedWidget {
 }
 
 /// The messenger's own route: the sheet. It comes up in [messengerOpenTime]
-/// on [messengerOpenCurve] and goes down in [messengerCloseTime] on
+/// on [messengerOpenCurve] (a spring) and goes down in [messengerCloseTime] on
 /// [messengerCloseCurve]; with [reduceMotion] it is simply there, and gone.
 class MessengerSheetRoute extends PageRoute<void> {
   MessengerSheetRoute({required this.page, required this.reduceMotion}) : super(settings: const RouteSettings(name: messengerRoutePrefix));
