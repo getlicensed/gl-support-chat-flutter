@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'common.dart';
 
@@ -63,10 +64,18 @@ class MessengerSheet {
   /// The phone asks for less motion: a released drag lands at once.
   bool still = false;
 
-  /// A finger moves the sheet (or its release is settling): it follows the
-  /// route's animation one to one, not through the curves.
+  /// A drag is in hand or its release is settling: the sheet follows the
+  /// route's animation one to one, not through the curves, and the
+  /// navigator knows a gesture is under way.
   bool _dragging = false;
   NavigatorState? _gestureOn;
+
+  /// The drag a finger holds now (its number), or null once let go.
+  int? _held;
+  int _drags = 0;
+
+  /// Waiting for a released drag to settle.
+  AnimationStatusListener? _settling;
 
   /// The lists inside the sheet: pulled down from their top, they move the
   /// sheet instead (see [_SheetScrollPosition]).
@@ -82,49 +91,76 @@ class MessengerSheet {
 
   AnimationController? get _controller => _route.sheetController;
 
-  bool get canDrag {
+  /// A finger has started to move the sheet: the drag's number, for the
+  /// calls that follow, or null when it cannot (closing, or gone). A
+  /// finger can take the sheet again while a release settles.
+  int? dragStart() {
     final c = _controller;
-    return c != null && _route.isActive && !closingAll && (_dragging || c.status != AnimationStatus.reverse);
-  }
-
-  /// A finger has started to move the sheet. False when it cannot.
-  bool dragStart() {
-    if (_dragging) return true;
-    final c = _controller;
-    if (!canDrag || c == null) return false;
-    // From where it is drawn: mid-way up, the curve and the finger differ.
-    _dragging = true;
+    if (c == null || !_route.isActive || closingAll) return null;
+    if (!_dragging && c.status == AnimationStatus.reverse) return null;
+    final settling = _settling;
+    if (settling != null) {
+      c.removeStatusListener(settling);
+      _settling = null;
+    }
     c.stop();
-    c.value = shown.value;
-    final navigator = _route.navigator;
-    navigator?.didStartUserGesture();
-    _gestureOn = navigator;
-    return true;
+    if (!_dragging) {
+      // From where it is drawn: mid-way up, the curve and the finger differ.
+      _dragging = true;
+      c.value = shown.value;
+      final navigator = _route.navigator;
+      navigator?.didStartUserGesture();
+      _gestureOn = navigator;
+    }
+    return _held = ++_drags;
   }
 
-  /// The finger moved [dy] (down positive). What it could not use — the
-  /// sheet is all the way up and the finger goes on up — is returned, for
-  /// the list under it to scroll.
-  double dragBy(double dy) {
+  /// Drag [drag]'s finger moved [dy] (down positive). What it could not
+  /// use — the sheet is all the way up and the finger goes on up — is
+  /// returned, for the list under it to scroll.
+  double dragBy(int drag, double dy) {
     final c = _controller;
-    if (!_dragging || c == null) return dy;
+    if (_held != drag || c == null) return dy;
     final h = height > 0 ? height : 1.0;
     final want = c.value - dy / h;
     c.value = want.clamp(0.0, 1.0);
     return want > 1 ? -(want - 1) * h : 0;
   }
 
-  /// The finger let go at [velocity] (logical pixels a second, down
-  /// positive): past a quarter of the way down, or flicked down, the whole
-  /// messenger closes; otherwise the sheet springs back up.
-  void dragEnd(double velocity) {
+  /// Drag [drag]'s finger let go at [velocity] (logical pixels a second,
+  /// down positive): past a quarter of the way down, or flicked down, the
+  /// whole messenger closes; otherwise the sheet springs back up.
+  void dragEnd(int drag, double velocity) {
+    if (_held != drag) return;
+    _held = null;
+    _release(velocity);
+  }
+
+  /// What held drag [drag] has gone mid-drag (its list or screen replaced,
+  /// a sign-out under the finger), without a word of its end: the sheet
+  /// springs back, after this frame — the tree is locked while it goes.
+  void dragAbandoned(int drag) {
+    if (_held != drag) return;
+    _held = null;
+    SchedulerBinding.instance
+      ..addPostFrameCallback((_) {
+        if (_held == null && _dragging && _settling == null) _release(0, mayClose: false);
+      })
+      ..ensureVisualUpdate();
+  }
+
+  void _release(double velocity, {bool mayClose = true}) {
     final c = _controller;
-    if (!_dragging || c == null) return;
+    if (c == null || !_dragging) return;
     final h = height > 0 ? height : 1.0;
-    final close = velocity > sheetCloseSpeed || (velocity >= -sheetCloseSpeed && c.value < 1 - sheetCloseShare);
+    // Popped under the finger (Android's back): it can only go down.
+    final popped = !_route.isActive;
+    final close = popped || (mayClose && (velocity > sheetCloseSpeed || (velocity >= -sheetCloseSpeed && c.value < 1 - sheetCloseShare)));
     if (close) {
-      closingAll = true;
-      _route.navigator?.popUntil((r) => !(r.settings.name ?? '').startsWith(messengerRoutePrefix));
+      if (!popped) {
+        closingAll = true;
+        _route.navigator?.popUntil((r) => !(r.settings.name ?? '').startsWith(messengerRoutePrefix));
+      }
       // The pop started the close from where the finger left it; it goes
       // on at the finger's speed instead of starting slow again.
       if (still) {
@@ -137,18 +173,19 @@ class MessengerSheet {
     } else {
       c.fling(velocity: math.max(1.0, -velocity / h));
     }
-    if (c.isAnimating) {
-      void settled(AnimationStatus status) {
-        if (status == AnimationStatus.completed || status == AnimationStatus.dismissed) {
-          c.removeStatusListener(settled);
-          _stopGesture();
-        }
-      }
-
-      c.addStatusListener(settled);
-    } else {
+    if (!c.isAnimating) {
+      _stopGesture();
+      return;
+    }
+    void settled(AnimationStatus status) {
+      if (status != AnimationStatus.completed && status != AnimationStatus.dismissed) return;
+      c.removeStatusListener(settled);
+      if (identical(_settling, settled)) _settling = null;
       _stopGesture();
     }
+
+    _settling = settled;
+    c.addStatusListener(settled);
   }
 
   void _stopGesture() {
@@ -159,6 +196,8 @@ class MessengerSheet {
   }
 
   void _routeGone() {
+    _held = null;
+    _settling = null;
     if (_dragging) _stopGesture();
     (scroll as _SheetScroll)._routeGone();
   }
@@ -232,14 +271,36 @@ class MessengerSheetRoute extends PageRoute<void> {
 /// Where a messenger screen is drawn: below the status bar and a [sheetGap],
 /// rounded at the top, as far up as the sheet is, and draggable down. The
 /// screen inside has no status bar to keep clear of.
-class MessengerSheetFrame extends StatelessWidget {
+class MessengerSheetFrame extends StatefulWidget {
   const MessengerSheetFrame({super.key, required this.sheet, required this.child});
 
   final MessengerSheet sheet;
   final Widget child;
 
   @override
+  State<MessengerSheetFrame> createState() => _MessengerSheetFrameState();
+}
+
+class _MessengerSheetFrameState extends State<MessengerSheetFrame> {
+  /// The drag this frame's own detector holds.
+  int? _drag;
+
+  @override
+  void dispose() {
+    final drag = _drag;
+    if (drag != null) widget.sheet.dragAbandoned(drag);
+    super.dispose();
+  }
+
+  void _end(double velocity) {
+    final drag = _drag;
+    _drag = null;
+    if (drag != null) widget.sheet.dragEnd(drag, velocity);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final sheet = widget.sheet;
     final top = MediaQuery.paddingOf(context).top + sheetGap;
     final radius = sheetRadius(Theme.of(context).platform);
     final inside = ClipRRect(
@@ -250,11 +311,14 @@ class MessengerSheetFrame extends StatelessWidget {
         child: GestureDetector(
           // A drag the screen does not take itself (a list that can scroll
           // takes its own): the sheet follows the finger.
-          onVerticalDragStart: (_) => sheet.dragStart(),
-          onVerticalDragUpdate: (d) => sheet.dragBy(d.primaryDelta ?? 0),
-          onVerticalDragEnd: (d) => sheet.dragEnd(d.primaryVelocity ?? 0),
-          onVerticalDragCancel: () => sheet.dragEnd(0),
-          child: child,
+          onVerticalDragStart: (_) => _drag = sheet.dragStart(),
+          onVerticalDragUpdate: (d) {
+            final drag = _drag;
+            if (drag != null) sheet.dragBy(drag, d.primaryDelta ?? 0);
+          },
+          onVerticalDragEnd: (d) => _end(d.primaryVelocity ?? 0),
+          onVerticalDragCancel: () => _end(0),
+          child: widget.child,
         ),
       ),
     );
@@ -394,37 +458,51 @@ class _SheetScrollPosition extends ScrollPositionWithSingleContext {
   _SheetScrollPosition(this.sheet, {required super.physics, required super.context, super.oldPosition});
 
   final MessengerSheet sheet;
-  bool _pulling = false;
+
+  /// The sheet's drag this list holds while it is pulled.
+  int? _pull;
 
   @override
   void applyUserOffset(double delta) {
     // A list from the top down only (the thread runs from the bottom up,
     // and keeps its own controller).
-    if (!_pulling && delta > 0 && axisDirection == AxisDirection.down && pixels <= minScrollExtent) {
-      _pulling = sheet.dragStart();
+    if (_pull == null && delta > 0 && axisDirection == AxisDirection.down && pixels <= minScrollExtent) {
+      _pull = sheet.dragStart();
     }
-    if (!_pulling) {
+    final pull = _pull;
+    if (pull == null) {
       super.applyUserOffset(delta);
       return;
     }
-    final rest = sheet.dragBy(delta);
+    final rest = sheet.dragBy(pull, delta);
     if (rest < 0) {
       // Back up at the top: the list takes the rest.
-      _pulling = false;
-      sheet.dragEnd(0);
+      _pull = null;
+      sheet.dragEnd(pull, 0);
       super.applyUserOffset(rest);
     }
   }
 
   @override
   void goBallistic(double velocity) {
-    if (_pulling) {
-      _pulling = false;
+    final pull = _pull;
+    if (pull != null) {
+      _pull = null;
       // The scroll velocity runs against the finger's.
-      sheet.dragEnd(-velocity);
+      sheet.dragEnd(pull, -velocity);
       super.goBallistic(0);
       return;
     }
     super.goBallistic(velocity);
+  }
+
+  @override
+  void dispose() {
+    // Gone under the finger (Home replaced by a sign-in, say): the sheet
+    // must not be left held, half down.
+    final pull = _pull;
+    _pull = null;
+    if (pull != null) sheet.dragAbandoned(pull);
+    super.dispose();
   }
 }

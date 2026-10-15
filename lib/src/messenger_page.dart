@@ -129,6 +129,9 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
   BuildContext? _inner;
   bool _openScheduled = false;
 
+  /// The fallback screen showed at the last build.
+  bool _failed = false;
+
   @override
   void initState() {
     super.initState();
@@ -301,7 +304,16 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
             // Home as a skeleton in the chatbot's colours; Home itself
             // cross-fades in over it (see [HomeTab]).
             final Widget shown;
-            if (controller.phase == MessengerPhase.failed) {
+            final failed = controller.phase == MessengerPhase.failed;
+            // A screen opened over the tabs while it signed in (they work
+            // meanwhile) would cover the way out: back to the fallback.
+            if (failed && !_failed) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _closeScreensAbove();
+              });
+            }
+            _failed = failed;
+            if (failed) {
               shown = _FallbackScreen(key: const ValueKey<String>('failed'), fallback: widget.fallback, browserUrl: widget.browserUrl, onRetry: controller.start);
             } else {
               if (controller.phase == MessengerPhase.ready) _scheduleOpen(controller);

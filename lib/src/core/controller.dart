@@ -263,8 +263,10 @@ class MessengerController extends ChangeNotifier {
   Future<void>? _listLoad;
   int _attached = 0;
 
-  /// The screens have closed: the connection goes once nothing is left to send.
-  bool _suspended = false;
+  /// No screen shows it — closed, or never opened yet (fetched ahead after
+  /// `login`): no connection, and the app coming back to the front does
+  /// not open one. [start] clears it.
+  bool _suspended = true;
   Timer? _idleTimer;
 
   /// The app is in front. While it is not, nothing counts as read.
@@ -326,10 +328,14 @@ class MessengerController extends ChangeNotifier {
   }
 
   Future<void> _start() async {
+    final epoch = _epoch;
     // Fetching ahead (see [prefetch]): its sign-in and list are this open's own.
     final ahead = _prefetchRun;
-    if (ahead != null) await ahead;
-    final epoch = _epoch;
+    if (ahead != null) {
+      await ahead;
+      // Signed out, or someone else in, meanwhile: the start after the reset is theirs.
+      if (epoch != _epoch) return;
+    }
     final cached = phase == MessengerPhase.ready;
     final opened = _now();
     _lastUnread = -1; // the badge may have moved while it was closed: say the count again

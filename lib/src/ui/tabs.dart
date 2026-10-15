@@ -134,10 +134,11 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
     ..addStatusListener((status) {
       if (status == AnimationStatus.completed && _leaving != null && mounted) setState(() => _leaving = null);
     });
-  late final Animation<double> _goes = ReverseAnimation(CurvedAnimation(parent: _t, curve: const Interval(0, _TabStack.out)));
-  late final Animation<double> _comes = CurvedAnimation(parent: _t, curve: const Interval(_TabStack.out, 1));
-  late final Animation<double> _scale =
-      Tween<double>(begin: _TabStack.grow, end: 1).animate(CurvedAnimation(parent: _t, curve: const Interval(_TabStack.out, 1, curve: Curves.easeOutCubic)));
+  late final CurvedAnimation _out = CurvedAnimation(parent: _t, curve: const Interval(0, _TabStack.out));
+  late final Animation<double> _goes = ReverseAnimation(_out);
+  late final CurvedAnimation _comes = CurvedAnimation(parent: _t, curve: const Interval(_TabStack.out, 1));
+  late final CurvedAnimation _grows = CurvedAnimation(parent: _t, curve: const Interval(_TabStack.out, 1, curve: Curves.easeOutCubic));
+  late final Animation<double> _scale = Tween<double>(begin: _TabStack.grow, end: 1).animate(_grows);
 
   /// The tab going, while it fades out.
   int? _leaving;
@@ -174,6 +175,9 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
 
   @override
   void dispose() {
+    _out.dispose();
+    _comes.dispose();
+    _grows.dispose();
     _t.dispose();
     super.dispose();
   }

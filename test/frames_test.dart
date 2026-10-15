@@ -533,6 +533,33 @@ void main() {
       await settle(tester);
     });
 
+    testWidgets('opened while the fetch ahead is out, then someone else signs in: one start, for them', (tester) async {
+      final ready = <Map<String, Object?>>[];
+      await tester.runAsync(() => GLSupportChat.configure(
+            apiUrl: 'https://api.test',
+            productId: 'product-1',
+            onDiagnostic: (event, detail) {
+              if (event == 'messenger_ready') ready.add(detail);
+            },
+          ));
+      final host = await app(tester);
+      server.hold(<String>['/widget/conversations']);
+      await GLSupportChat.login(const GLSupportChatIdentity(id: 'A', name: 'Ayesha Khan', hash: 'h'));
+      await tester.pump();
+      unawaited(GLSupportChat.present(host));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      unawaited(GLSupportChat.login(const GLSupportChatIdentity(id: 'B', name: 'Bilal Ahmed', hash: 'h')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      server.release();
+      await settle(tester, frames: 40);
+      expect(ready, hasLength(1), reason: 'one start, not the first one carrying on for the next customer');
+      expect(server.paths.where((p) => p == 'GET /widget/messages').length, 1);
+      Navigator.of(host, rootNavigator: true).pop();
+      await settle(tester);
+    });
+
     testWidgets("after an app restart the skeleton is in last time's colour, logo, greeting and team", (tester) async {
       server.session = <String, dynamic>{
         ...server.session,
@@ -1031,6 +1058,130 @@ void main() {
       expect(jsonDecode(r.body), <String, dynamic>{'slug': 'renew', 'reaction': 'sad'});
       server.reactionStatus = 429;
       await expectLater(api.articleReaction('renew', 'sad'), throwsA(isA<ApiException>().having((e) => e.status, 'status', 429)));
+    });
+  });
+
+  // Found by a review of the first version of 0.4.6 (15 Oct).
+  group('review', () {
+    testWidgets('fetched ahead but never opened: the app coming back to the front opens no connection', (tester) async {
+      var channels = 0;
+      final api = server.api();
+      final c = MessengerController(
+        api: api,
+        signIn: () => api.authenticate(visitorId: 'visitor-1'),
+        realtimeFactory: ({required String apiUrl, required String Function() token}) {
+          channels++;
+          return FakeChannel();
+        },
+      );
+      addTearDown(c.dispose);
+      await c.prefetch();
+      await tester.pump();
+      expect(c.phase, MessengerPhase.ready);
+      c.lifecycleChanged(AppLifecycleState.inactive);
+      c.lifecycleChanged(AppLifecycleState.paused);
+      c.lifecycleChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(channels, 0, reason: 'nothing on screen: nothing live');
+      expect(server.paths, isNot(contains('GET /widget/messages')));
+    });
+
+    testWidgets("a pull on Home that loses its list (a sign-out under the finger) springs back, and the app takes taps again", (tester) async {
+      server.articles = <Map<String, dynamic>>[
+        for (var i = 0; i < 5; i++) <String, dynamic>{'slug': 'a$i', 'title': 'Article number $i about the licence', 'description': null},
+      ];
+      final c = await host(tester, phone: Phone.iphoneSE);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      final top = sheetY(tester)!;
+      final g = await tester.startGesture(tester.getCenter(find.text('Send us a message')));
+      for (var i = 0; i < 4; i++) {
+        await g.moveBy(const Offset(0, 25));
+        await tester.pump(frame);
+      }
+      expect(sheetY(tester), greaterThan(top + 30), reason: 'held part way down');
+      c.reset(); // Home goes for the skeleton, under the finger
+      await settle(tester, frames: 3);
+      await g.up();
+      await settle(tester);
+      expect(sheetY(tester), top, reason: 'back up, not left half down');
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+      expect(navigator.userGestureInProgress, isFalse, reason: 'no gesture left open');
+      await tester.tap(find.byTooltip('Close').first);
+      await settle(tester);
+      expect(find.byType(GLSupportChatPage), findsNothing, reason: 'it still takes taps');
+    });
+
+    testWidgets("Android's back while the sheet is held: it goes down when let go, never left on screen out of the history", (tester) async {
+      await host(tester, platform: TargetPlatform.android);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      final g = await tester.startGesture(tester.getCenter(find.text('Search for help')));
+      for (var i = 0; i < 3; i++) {
+        await g.moveBy(const Offset(0, 20));
+        await tester.pump(frame);
+      }
+      await tester.binding.handlePopRoute();
+      await tester.pump(frame);
+      for (var i = 0; i < 3; i++) {
+        await g.moveBy(const Offset(0, -20));
+        await tester.pump(frame);
+      }
+      await g.up();
+      await settle(tester);
+      expect(find.byType(GLSupportChatPage), findsNothing);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      expect(find.byType(GLSupportChatPage), findsOneWidget, reason: 'the app works as before');
+    });
+
+    testWidgets('a list pulled, pushed back past the top and pulled again, in one touch: the sheet stays with the finger', (tester) async {
+      server.articles = <Map<String, dynamic>>[
+        for (var i = 0; i < 30; i++) <String, dynamic>{'slug': 'a$i', 'title': 'Article number $i about the licence', 'description': null},
+      ];
+      await host(tester);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      await tester.tap(find.text('Help').last);
+      await settle(tester);
+      final g = await tester.startGesture(tester.getCenter(find.text('Article number 2 about the licence')));
+      Future<void> move(double dy, int times) async {
+        for (var i = 0; i < times; i++) {
+          await g.moveBy(Offset(0, dy));
+          await tester.pump(frame);
+        }
+      }
+
+      await move(20, 4); // down: the sheet comes
+      await move(-20, 6); // back up past the top: the sheet settles, the list takes the rest
+      await move(20, 6); // and down again
+      final held = sheetY(tester)!;
+      expect(held, greaterThan(sheetTop + 20), reason: "pulling again");
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(frame);
+      expect(sheetY(tester), closeTo(held, 0.5), reason: 'the first settling does not take it from the finger');
+      await g.up();
+      await settle(tester);
+      expect(sheetY(tester), sheetTop);
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+      expect(navigator.userGestureInProgress, isFalse);
+    });
+
+    testWidgets('a conversation opened over the tabs while it signs in goes when the sign-in fails: the way out shows', (tester) async {
+      server.hold(<String>['/widget/auth']);
+      await host(tester);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      await tester.tap(find.text('Messages'));
+      await settle(tester);
+      await tester.tap(find.text('Send us a message'));
+      await settle(tester);
+      expect(find.byType(ConversationPage), findsOneWidget);
+      server.failing['/widget/auth'] = 500;
+      server.release();
+      await settle(tester, frames: 20);
+      expect(find.byType(ConversationPage), findsNothing);
+      expect(find.text("We can't open the chat right now"), findsOneWidget);
     });
   });
 }
