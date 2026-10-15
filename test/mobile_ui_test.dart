@@ -514,7 +514,7 @@ void main() {
 
     testWidgets('iOS: a swipe from the left edge steps back from a conversation', (tester) async {
       await openThread(tester, messages: thread(3));
-      expect(ModalRoute.of(tester.element(page())), isA<CupertinoPageRoute<void>>());
+      expect(ModalRoute.of(tester.element(page())), isA<CupertinoRouteTransitionMixin<void>>());
       final swipe = await tester.startGesture(const Offset(5, 400));
       for (var i = 0; i < 10; i++) {
         await swipe.moveBy(const Offset(30, 0));

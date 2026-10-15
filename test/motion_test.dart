@@ -6,6 +6,7 @@ import 'package:gl_support_chat/gl_support_chat.dart';
 import 'package:gl_support_chat/src/core/session_store.dart';
 import 'package:gl_support_chat/src/messenger_page.dart';
 import 'package:gl_support_chat/src/ui/conversation.dart';
+import 'package:gl_support_chat/src/ui/sheet.dart';
 import 'package:gl_support_chat/src/ui/tabs.dart';
 
 import 'support/fakes.dart';
@@ -357,12 +358,14 @@ void main() {
       c.dispose();
     });
 
-    test('the sheet rises in about 300 ms and goes down a little faster; at once with less motion', () {
-      final route = messengerRoute(const SizedBox(), reduceMotion: false) as PageRouteBuilder<void>;
-      expect(route.transitionDuration, const Duration(milliseconds: 300));
-      expect(route.reverseTransitionDuration.inMilliseconds, inInclusiveRange(220, 250));
+    test('the sheet rises in 400 ms and goes down in 250 ms; at once with less motion', () {
+      final route = messengerRoute(const SizedBox(), reduceMotion: false) as MessengerSheetRoute;
+      expect(route.transitionDuration, const Duration(milliseconds: 400));
+      expect(route.reverseTransitionDuration, const Duration(milliseconds: 250));
+      expect(route.opaque, isFalse, reason: 'the app shows behind it');
+      expect(route.barrierColor, const Color(0x66000000), reason: 'dimmed by 40%');
       expect(route.settings.name, 'gl_support_chat', reason: 'close pops it by name');
-      final still = messengerRoute(const SizedBox(), reduceMotion: true) as PageRouteBuilder<void>;
+      final still = messengerRoute(const SizedBox(), reduceMotion: true) as MessengerSheetRoute;
       expect(still.transitionDuration, Duration.zero);
       expect(still.reverseTransitionDuration, Duration.zero);
     });
@@ -398,17 +401,17 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       final early = sheetTop(tester);
-      expect(early, inExclusiveRange(0, 844));
-      expect(early, lessThan(844 * 0.5), reason: 'easeOutCubic: most of the way up in the first third');
-      await tester.pump(const Duration(milliseconds: 250));
-      expect(sheetTop(tester), 0);
+      expect(early, inExclusiveRange(57, 844));
+      expect(early, lessThan(57 + 787 * 0.3), reason: 'emphasised deceleration: most of the way up in the first quarter');
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(sheetTop(tester), 57, reason: 'below the status bar and a 10-point strip of the app');
       await settle(tester);
 
       Navigator.of(host, rootNavigator: true).pop();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 120));
-      expect(sheetTop(tester), inExclusiveRange(0, 844), reason: 'going down');
-      await tester.pump(const Duration(milliseconds: 130));
+      expect(sheetTop(tester), inExclusiveRange(57, 844), reason: 'going down');
+      await tester.pump(const Duration(milliseconds: 131));
       expect(find.byType(GLSupportChatPage), findsNothing, reason: 'gone within 250 ms');
     });
 
@@ -418,7 +421,7 @@ void main() {
       unawaited(GLSupportChat.present(host));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 16));
-      expect(sheetTop(tester), 0);
+      expect(sheetTop(tester), 57);
       await settle(tester);
       Navigator.of(host, rootNavigator: true).pop();
       await tester.pump();

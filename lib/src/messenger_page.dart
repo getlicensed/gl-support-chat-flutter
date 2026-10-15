@@ -8,6 +8,7 @@ import 'fallback.dart';
 import 'links.dart';
 import 'ui/common.dart';
 import 'ui/navigation.dart';
+import 'ui/sheet.dart';
 import 'ui/tabs.dart';
 
 /// Where the messenger opens.
@@ -235,39 +236,42 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
       _pending = null;
       return;
     }
+    // While the sheet is still rising, the screen is simply there and rises
+    // with it: one motion, not a slide in from the side on top of the rise.
+    final instant = route?.animation?.status == AnimationStatus.forward;
     final slug = screen.articleSlug;
     if (slug != null) {
       _pending = null;
-      openArticle(context, slug);
+      openArticle(context, slug, instant: instant);
       return;
     }
     final id = screen.conversationId;
     if (id != null) {
       if (id != c.liveId && c.refreshing) return; // it may be the open one by now
       _pending = null;
-      _openConversation(context, c, id);
+      _openConversation(context, c, id, instant: instant);
       return;
     }
     if (screen == GLSupportChatScreen.messages) {
       if (c.refreshing) return;
       _pending = null;
       final unread = c.unreadConversationId;
-      if (unread != null) _openConversation(context, c, unread);
+      if (unread != null) _openConversation(context, c, unread, instant: instant);
       return;
     }
     _pending = null;
   }
 
-  void _openConversation(BuildContext context, MessengerController c, String id) {
+  void _openConversation(BuildContext context, MessengerController c, String id, {bool instant = false}) {
     if (id == c.liveId) {
-      openLiveConversation(context);
+      openLiveConversation(context, instant: instant);
       return;
     }
     ConversationSummary? row;
     for (final r in c.conversations) {
       if (r.id == id) row = r;
     }
-    openConversation(context, row ?? ConversationSummary(id: id, open: false, lastMessageAt: DateTime.now()));
+    openConversation(context, row ?? ConversationSummary(id: id, open: false, lastMessageAt: DateTime.now()), instant: instant);
   }
 
   /// Someone else signed in (or nobody) while it was open: nothing opened
@@ -356,29 +360,10 @@ class _FadeInState extends State<_FadeIn> with SingleTickerProviderStateMixin {
       );
 }
 
-/// The messenger's own route: a sheet that rises from the bottom over the
-/// app, which dims a little behind it, as Intercom's does. It comes up in
-/// [openTime], decelerating, and goes down a little faster, [closeTime],
-/// the same curve in reverse. A phone that asks for less motion gets it at
-/// once both ways.
-Route<void> messengerRoute(Widget page, {required bool reduceMotion}) => PageRouteBuilder<void>(
-      settings: const RouteSettings(name: messengerRoutePrefix),
-      transitionDuration: reduceMotion ? Duration.zero : messengerOpenTime,
-      reverseTransitionDuration: reduceMotion ? Duration.zero : messengerCloseTime,
-      barrierColor: const Color(0x33000000),
-      pageBuilder: (_, __, ___) => page,
-      transitionsBuilder: (context, animation, _, child) {
-        if (MediaQuery.disableAnimationsOf(context)) return child;
-        return SlideTransition(
-          position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
-              .animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
-          child: child,
-        );
-      },
-    );
-
-const messengerOpenTime = Duration(milliseconds: 300);
-const messengerCloseTime = Duration(milliseconds: 240);
+/// The messenger's own route: a sheet that rises over the app, which shows
+/// dimmed in a strip above it (see [MessengerSheetRoute]). A phone that asks
+/// for less motion gets it at once both ways.
+Route<void> messengerRoute(Widget page, {required bool reduceMotion}) => MessengerSheetRoute(page: page, reduceMotion: reduceMotion);
 
 class _Loading extends StatelessWidget {
   const _Loading();

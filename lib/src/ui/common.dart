@@ -7,6 +7,7 @@ import '../core/controller.dart';
 import '../core/format.dart';
 import '../fallback.dart';
 import '../launcher.dart';
+import 'sheet.dart';
 
 /// The messenger's routes are named under this, so "close" can pop all of
 /// them at once and land back on the app's own screen.
@@ -120,8 +121,10 @@ SystemUiOverlayStyle statusBarStyle({required bool darkIcons}) => SystemUiOverla
 /// The status bar over the brand colour: the icons follow the text on it.
 SystemUiOverlayStyle statusBarOnBrand(BrandColors brand) => statusBarStyle(darkIcons: brand.onPrimary != Colors.white);
 
-/// Pop every messenger screen: back to the app.
+/// Pop every messenger screen: back to the app. In the sheet they all go
+/// down with it, rather than each leaving its own way at once.
 void closeMessenger(BuildContext context) {
+  MessengerSheet.maybeOf(context)?.closingAll = true;
   Navigator.of(context).popUntil((route) => !(route.settings.name ?? '').startsWith(messengerRoutePrefix));
 }
 
