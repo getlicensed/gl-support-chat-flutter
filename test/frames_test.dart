@@ -721,7 +721,7 @@ void frames({required bool lessMotion}) {
       return manual;
     }
 
-    testWidgets('the composer grows a line at a time over 150 ms, and the thread with it — no 46-point jump; it shrinks the same way on Send', (tester) async {
+    testWidgets('the composer grows a line at a time over 150 ms, and the thread with it — no 46-point jump; Send empties it to one line at once', (tester) async {
       final manual = await openChat(tester);
       manual.answers['visitor:message'] = echo(<String>[]);
       final one = tester.getSize(field()).height;
@@ -744,7 +744,9 @@ void frames({required bool lessMotion}) {
       await tester.tap(find.byIcon(Icons.arrow_upward));
       await tester.pump();
       final back = await sample(tester, 14, () => footerTop(tester));
-      expect(back.first, lessThan(before - 10), reason: 'not snapped back in one frame');
+      // In the frame the message lands, which keeps the thread where it was
+      // on the screen (0.4.8): easing it down under the glide dipped it.
+      expect(back.first, closeTo(before, 0.5), reason: 'one line again in the frame Send empties it');
       expect(back.last, closeTo(before, 0.5));
     });
 

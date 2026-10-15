@@ -231,12 +231,15 @@ void motion({required bool lessMotion}) {
       await tester.pump(const Duration(milliseconds: 80));
       expect(typingRow(), findsOneWidget, reason: 'the row waits a moment for the reply');
       expect(tester.getRect(last).top, before);
+      final dotsTop = tester.getRect(typingSlot().first).top;
       await arrive(tester, msg('r1', 'agent', 'Found it: posted on Monday.', at: at(30)));
-      expect(typingRow(), findsNothing, reason: 'the reply takes its place at once');
+      expect(typingRow(), findsNothing, reason: 'the reply takes its place at once (the dots fade out over it, unheard)');
       expect(tester.getRect(last).top, before, reason: 'nothing on screen jumps');
       final reply = find.text('Found it: posted on Monday.');
       final view = tester.getRect(threadList());
-      expect(tester.getRect(reply).bottom, greaterThan(view.bottom), reason: 'the rest of the reply is just below, out of view');
+      final replyRows = find.byWidgetPredicate((w) => w is KeyedSubtree && '${w.key}'.contains(':r1'), skipOffstage: false);
+      final replyTop = replyRows.evaluate().map((e) => (e.renderObject! as RenderBox).localToGlobal(Offset.zero).dy).reduce((a, b) => a < b ? a : b);
+      expect(replyTop, closeTo(dotsTop, 0.5), reason: "the reply comes in where the dots were (0.4.8)");
       await tester.pump(const Duration(milliseconds: 16));
       await tester.pump(const Duration(milliseconds: 100));
       final halfway = tester.getRect(last).top;
@@ -263,7 +266,8 @@ void motion({required bool lessMotion}) {
       final settled = tester.getRect(last).top;
       expect(settled, lessThan(halfway));
       await settle(tester);
-      expect(tester.getRect(last).top, settled, reason: 'and stays');
+      // A spring since 0.4.8: by then within half a point of rest.
+      expect(tester.getRect(last).top, closeTo(settled, 0.5), reason: 'and stays');
       // Taps land where the rows are drawn.
       expect(tester.getRect(find.text('Found it: posted on Monday, so it should be with you by Thursday.')).bottom, lessThanOrEqualTo(tester.getRect(threadList()).bottom));
     });
@@ -306,11 +310,11 @@ void motion({required bool lessMotion}) {
       channel.server('typing:stop', <String, dynamic>{'conversationId': 'conv-1', 'authorType': 'bot'});
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 16));
-      await tester.pump(const Duration(milliseconds: 200));
-      expect(tester.getSize(rowBox).height, full, reason: 'a moment first, for a reply');
+      await tester.pump(const Duration(milliseconds: 560));
+      expect(tester.getSize(rowBox).height, full, reason: '600 ms first, for a reply (0.4.8)');
       await tester.pump(const Duration(milliseconds: 150));
-      expect(tester.getSize(rowBox).height, inExclusiveRange(0, full), reason: 'then it closes');
-      await tester.pump(const Duration(milliseconds: 120));
+      expect(tester.getSize(rowBox).height, inExclusiveRange(0, full), reason: 'then it closes, over 300 ms');
+      await tester.pump(const Duration(milliseconds: 200));
       expect(typingRow(), findsNothing);
     });
   });

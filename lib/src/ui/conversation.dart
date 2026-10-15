@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -357,10 +359,15 @@ class _Rows {
     for (var n = 2; !_used.add(k); n++) {
       k = '$key#$n';
     }
+    // The first of a message's rows: a reply's takes the typing dots' place.
+    final lead = message != null && !identical(message, _last);
+    _last = message;
     // Every row is wrapped the same way, arriving or not: the row keeps its
     // place in the tree, and its state, from one build to the next.
-    list.add(cache.row(k, (from, message), () => KeyedSubtree(key: ValueKey<String>(k), child: _Entrance(message: message, child: row()))));
+    list.add(cache.row(k, (from, message, lead), () => KeyedSubtree(key: ValueKey<String>(k), child: _Entrance(message: message, lead: lead, child: row()))));
   }
+
+  Object? _last;
 }
 
 List<Widget> _liveRows(BuildContext context, MessengerController c, _RowCache cache) {
@@ -485,8 +492,9 @@ List<Widget> _messageRows(
 /// down. A drag or a tap on the thread puts the keyboard away.
 ///
 /// At the latest, rows that come in live do not push the thread up in one
-/// jump: what is on screen stays put for a frame, then glides up as they
-/// come in below ([glide]).
+/// jump: what is on screen stays where it was in the frame they land in —
+/// even if the composer shrank in the same frame — and from there the thread
+/// glides up to them ([glide]).
 class _Thread extends StatefulWidget {
   const _Thread({super.key, required this.rows, this.sent = 0, this.received = 0, this.glide = false});
   final List<Widget> rows;
@@ -504,6 +512,19 @@ class _Thread extends StatefulWidget {
   State<_Thread> createState() => _ThreadState();
 }
 
+/// The dots a reply takes the place of, handed from the typing row to the
+/// reply's rows in the frame the reply lands: they fade out over it.
+class _Dots {
+  _Dots(this.author, this.shown);
+  final TypingAuthor author;
+
+  /// How much of the typing row showed (it may have been closing).
+  final double shown;
+
+  /// The reply that took them.
+  Object? by;
+}
+
 class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   final _scroll = ScrollController();
   late final _physics = _KeepPlace(this);
@@ -511,24 +532,36 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   /// The rows built right now, by key: where each is laid out.
   final _slots = <Key, _SlotState>{};
 
-  /// A row on screen before an update, and how far it sat above the bottom
-  /// of the view: for the one layout that follows.
-  ({Key key, double above})? _anchor;
+  /// A row on screen before an update — how far its top sat above the
+  /// bottom of the view, as drawn; how tall it was; the row just above it,
+  /// whose foot is its top; and the view's height then — for the one layout
+  /// that follows.
+  ({Key key, double above, double extent, Key? upper, double view})? _anchor;
 
-  /// The [_anchor] is a glide's, not yet drawn: what scrolling could not
-  /// keep of it is drawn as a shift ([_paintShift]).
-  bool _gliding = false;
+  /// The update brought rows in live at the latest: the frame that draws
+  /// them starts the glide from where the anchor holds the thread.
+  bool _landing = false;
 
-  /// What scrolling could not keep in a glide (a thread shorter than the
-  /// screen does not scroll): the rows are drawn this much lower, then eased
-  /// up into place. Drawn only: nothing is laid out again.
-  double _shiftFrom = 0;
-  bool _shiftWaiting = false;
-  // Its whole time even with less motion asked for, as Intercom's: see
-  // [fullTime].
-  late final AnimationController _ease =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 250), value: 1, animationBehavior: AnimationBehavior.preserve);
+  /// The glide down to the latest: how far the thread is drawn below its
+  /// place there, on a critically damped spring. In the frame a row lands
+  /// it starts from where the thread was, with the speed it already had: a
+  /// second reply while the first glides carries it on, never from rest.
+  late final AnimationController _glide = AnimationController.unbounded(vsync: this, animationBehavior: AnimationBehavior.preserve)
+    ..addListener(_onGlide)
+    ..addStatusListener(_onGlideStatus);
+
+  /// The glide moves the scroll offset as well as the shift; not once the
+  /// reader's finger has the thread.
+  bool _glideScrolls = true;
+
+  /// What scrolling cannot take of the glide (a thread shorter than the
+  /// screen does not scroll): the rows are drawn this much lower (higher,
+  /// below 0). Drawn only: nothing is laid out again.
+  double _shift = 0;
   _RenderShifted? _shifted;
+
+  /// The dots a reply is taking the place of, for this frame.
+  _Dots? _dots;
 
   /// Replies that arrived while the reader was up the thread.
   int _unseen = 0;
@@ -539,11 +572,15 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   /// How far from the latest still counts as reading it, in logical pixels.
   static const _near = 120.0;
 
-  /// [_toLatest] is on its way down: a reply landing meanwhile is one at
-  /// the latest, not one for a reader up the thread.
-  bool _goingDown = false;
+  /// The glide's spring: from rest most of the way in 150 ms, settled by
+  /// 300, never past the latest and back.
+  static final _spring = SpringDescription.withDampingRatio(mass: 1, stiffness: 600, ratio: 1);
+  static final _omega = math.sqrt(600.0);
+  static const _tolerance = Tolerance(distance: 0.1, velocity: 5);
 
-  bool get _atLatest => !_scroll.hasClients || _goingDown || _scroll.offset <= _near;
+  bool get _gliding => _glide.isAnimating && _glideScrolls;
+
+  bool get _atLatest => !_scroll.hasClients || _gliding || _scroll.offset <= _near;
 
   @override
   void initState() {
@@ -554,7 +591,7 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   @override
   void dispose() {
     _scroll.dispose();
-    _ease.dispose();
+    _glide.dispose();
     super.dispose();
   }
 
@@ -565,39 +602,39 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   @override
   void didUpdateWidget(_Thread old) {
     super.didUpdateWidget(old);
-    if (!_atLatest) {
+    final atLatest = _atLatest;
+    if (!atLatest) {
       _holdPlace(widget.rows);
     } else if (widget.glide && (widget.sent > old.sent || widget.received > old.received)) {
       // At the latest, with rows coming in live: those on screen stay where
-      // they are in this layout, the new ones below them, out of view; then
-      // [_toLatest] glides down to them.
+      // they are in this frame, the new ones below them, out of view; the
+      // glide to them starts in the same frame (see [_paintShift]).
       _holdPlace(widget.rows, before: old.rows);
       if (_anchor != null) {
-        _gliding = true;
+        _landing = true;
         // The list is its own repaint boundary: ask for the paint that
-        // measures what scrolling kept.
+        // starts the glide.
         _shifted?.markNeedsPaint();
-        WidgetsBinding.instance.addPostFrameCallback((_) => _gliding = false);
       }
     }
     if (widget.sent > old.sent) {
       _unseen = 0;
-      _toLatest();
+      if (!_landing) _toLatest();
     } else if (widget.received > old.received) {
-      if (_atLatest) {
-        _toLatest();
+      if (atLatest) {
+        if (!_landing) _toLatest();
       } else {
         _unseen += widget.received - old.received;
       }
     }
   }
 
-  /// A reader up the thread keeps their place through the update. The list
-  /// is reversed: a row added below moves every other row to a new index,
-  /// and the list would lay them out a little off where they were (and an
-  /// answer typing out below would push them up). So: note a row on screen
-  /// now, and in the layout that follows set the scroll offset so that it is
-  /// where it was ([_KeepPlace]).
+  /// A reader keeps their place through the update. The list is reversed: a
+  /// row added below moves every other row to a new index, and the list
+  /// would lay them out a little off where they were (and an answer typing
+  /// out below would push them up). So: note a row on screen now, and in the
+  /// layout that follows set the scroll offset so that it is where it was
+  /// ([_KeepPlace]).
   ///
   /// The row is one that is still among [rows]. With [before] (the rows
   /// before the update) it is also above every new row: the new rows then
@@ -620,76 +657,152 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
     }
     final pixels = _scroll.position.pixels;
     final view = _scroll.position.viewportDimension;
-    ({Key key, double above})? found;
+    ({Key key, double above, double extent, Key? upper, double view})? found;
     for (final slot in _slots.values) {
       final i = index[slot.widget.key];
       if (i == null || i >= limit) continue;
       final at = slot.layoutOffset;
       if (at == null || at < pixels || at > pixels + view) continue;
-      if (found == null || at - pixels < found.above) found = (key: slot.widget.key!, above: at - pixels);
+      // Its top, as drawn: a row that loses its last line (the status
+      // under the customer's message before, a name under the team's)
+      // keeps its words where they were.
+      final extent = slot.extent;
+      final above = at + extent - pixels - _shift;
+      if (found == null || above < found.above) {
+        found = (key: slot.widget.key!, above: above, extent: extent, upper: i > 0 ? rows[i - 1].key : null, view: view);
+      }
     }
     if (found == null) return;
     _anchor = found;
     // For this update's layout only: a later one is the reader scrolling.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _anchor = null);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _anchor = null;
+      _landing = false;
+    });
+  }
+
+  /// How far below its place at the latest the thread must be drawn for
+  /// [_anchor] to be where it was: the scroll offset, and past what
+  /// scrolling can reach, a shift. The view's change counts: the composer
+  /// shrinking as it sends grows the view by its lines in the same frame,
+  /// and the rows keep their place on the screen, not above its foot.
+  double? _held(ScrollMetrics now) {
+    final anchor = _anchor;
+    if (anchor == null) return null;
+    final at = _slots[anchor.key]?.layoutOffset;
+    if (at == null) return null;
+    // Its top now: the foot of the row above it (a row's own height cannot
+    // be asked for in the middle of the list's layout), else where its own
+    // height put it.
+    final upper = anchor.upper;
+    final top = (upper == null ? null : _slots[upper]?.layoutOffset) ?? at + anchor.extent;
+    return top - anchor.above - (now.viewportDimension - anchor.view);
   }
 
   /// The scroll offset that keeps [_anchor] where it was, or [pixels].
   double _keptPixels(ScrollMetrics now, double pixels) {
-    final anchor = _anchor;
-    if (anchor == null) return pixels;
-    final at = _slots[anchor.key]?.layoutOffset;
-    if (at == null) return pixels;
-    final kept = at - anchor.above;
+    final kept = _held(now);
+    if (kept == null) return pixels;
     if (kept < now.minScrollExtent) return now.minScrollExtent;
     if (kept > now.maxScrollExtent) return now.maxScrollExtent;
     return kept;
   }
 
-  /// The shift the list is drawn with now.
-  double get _shift => _shiftWaiting ? _shiftFrom : _shiftFrom * (1 - Curves.easeOutCubic.transform(_ease.value));
-
-  /// At each paint of the list. In a glide's first paint, the rows on screen
+  /// At each paint of the list. In the frame rows land, the rows on screen
   /// that scrolling could not keep in place are drawn where they were, and
-  /// then eased up along with the rest.
+  /// the glide starts from there.
   double _paintShift() {
-    final anchor = _anchor;
-    if (_gliding && anchor != null && _scroll.hasClients) {
-      _gliding = false;
-      final at = _slots[anchor.key]?.layoutOffset;
-      // How far the row moved up the screen in this layout.
-      final moved = at == null ? 0.0 : at - _scroll.position.pixels - anchor.above;
-      if (moved > 0.5) {
-        _shiftFrom = _shift + moved;
-        _shiftWaiting = true;
-        // Not while painting: the next frame starts the ease.
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          _shiftWaiting = false;
-          _ease.forward(from: 0);
-        });
+    if (_landing && _scroll.hasClients) {
+      _landing = false;
+      final held = _held(_scroll.position);
+      if (held != null) {
+        _shift = held - _scroll.position.pixels;
+        _glideFrom(held);
       }
     }
     return _shift;
   }
 
+  /// Glide from [from] (how far below its place the thread is drawn) to
+  /// the latest. The speed it had carries on, and what came in adds a
+  /// push of its own, so it moves from the first frame after.
+  void _glideFrom(double from) {
+    final now = _glide.isAnimating ? _glide.value : 0.0;
+    final speed = _glide.isAnimating ? _glide.velocity : 0.0;
+    _glideScrolls = true;
+    _glide.animateWith(SpringSimulation(_spring, from, 0, speed - 0.5 * _omega * (from - now), tolerance: _tolerance));
+  }
+
+  void _onGlide() {
+    if (!_scroll.hasClients) return;
+    final d = _glide.value;
+    final position = _scroll.position;
+    var pixels = position.pixels;
+    if (_glideScrolls) {
+      pixels = d.clamp(position.minScrollExtent, position.maxScrollExtent);
+      if (pixels != position.pixels) position.jumpTo(pixels);
+    }
+    _setShift(d - pixels);
+  }
+
+  void _onGlideStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed && status != AnimationStatus.dismissed) return;
+    // Settled within a tenth of a point: exactly at the latest.
+    if (_glideScrolls && _scroll.hasClients && _scroll.offset != 0 && _scroll.offset.abs() < 1) _scroll.jumpTo(0);
+    _setShift(0);
+  }
+
+  void _setShift(double shift) {
+    if (shift == _shift) return;
+    _shift = shift;
+    _shifted?.markNeedsPaint();
+  }
+
+  /// A finger on the thread: it is the reader's now. The glide leaves the
+  /// scroll offset where it is; what was drawn shifted eases on into place.
+  void _fingerDown(PointerDownEvent _) {
+    if (!_gliding) return;
+    _glideScrolls = false;
+    final speed = _glide.velocity;
+    if (_shift == 0) {
+      _glide.stop();
+    } else {
+      _glide.animateWith(SpringSimulation(_spring, _shift, 0, speed, tolerance: _tolerance));
+    }
+  }
+
   /// Once the new rows are laid out: down to the latest (the list is
-  /// reversed, so that is offset 0). A short way is animated, with less
+  /// reversed, so that is offset 0), on the glide's spring, with less
   /// motion asked for too, as Intercom's thread is (see [fullTime]); from
   /// far up it jumps, rather than scroll through the whole history.
   void _toLatest() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       final from = _scroll.offset;
-      if (from <= 0) return;
+      if (from <= 0 && _shift == 0) return;
       if (from > _scroll.position.viewportDimension * 2) {
+        _glide.stop();
+        _setShift(0);
         _scroll.jumpTo(0);
       } else {
-        _goingDown = true;
-        // Done, or stopped by the reader's finger.
-        _scroll.animateTo(0, duration: const Duration(milliseconds: 250), curve: Curves.easeOutCubic).whenComplete(() => _goingDown = false);
+        _glideFrom(from + _shift);
       }
     });
+  }
+
+  /// The reply in [message] takes the place of the typing dots: they are
+  /// handed to its first row, to fade out over it. Null for any other row.
+  _Dots? _dotsFor(Object? message) {
+    final d = _dots;
+    if (d == null || message is! ChatMessage || message.fromVisitor) return null;
+    d.by ??= message;
+    return identical(d.by, message) ? d : null;
+  }
+
+  /// The typing row closed at once for a reply: its dots go to the reply.
+  void _dotsTaken(TypingAuthor author, double shown) {
+    _dots = _Dots(author, shown);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _dots = null);
   }
 
   @override
@@ -723,8 +836,8 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
     // with it the reader's place.
     return Stack(
       children: [
-        // Its own layer: the easing repaints the thread, not the header and composer.
-        Positioned.fill(child: RepaintBoundary(child: _Shifted(thread: this, child: list))),
+        // Its own layer: the glide repaints the thread, not the header and composer.
+        Positioned.fill(child: RepaintBoundary(child: Listener(onPointerDown: _fingerDown, child: _Shifted(thread: this, child: list)))),
         // It fades in and out over 200 ms rather than blink.
         Positioned(
           left: 0,
@@ -771,12 +884,10 @@ class _RenderShifted extends RenderProxyBox {
   void attach(PipelineOwner owner) {
     super.attach(owner);
     thread._shifted = this;
-    thread._ease.addListener(markNeedsPaint);
   }
 
   @override
   void detach() {
-    thread._ease.removeListener(markNeedsPaint);
     if (identical(thread._shifted, this)) thread._shifted = null;
     super.detach();
   }
@@ -889,17 +1000,25 @@ class _SlotState extends State<_Slot> {
     super.dispose();
   }
 
-  /// Where the row is laid out along the thread (0 at the latest), or null
-  /// while it is not laid out.
-  double? get layoutOffset {
+  /// The row's box in the list, while it is laid out.
+  RenderBox? get _item {
     if (!_active || !mounted) return null;
     RenderObject? r = context.findRenderObject();
     while (r != null) {
-      final data = r.parentData;
-      if (data is SliverMultiBoxAdaptorParentData) return data.layoutOffset;
+      if (r.parentData is SliverMultiBoxAdaptorParentData) return r is RenderBox ? r : null;
       r = r.parent;
     }
     return null;
+  }
+
+  /// Where the row is laid out along the thread (0 at the latest: its
+  /// foot), or null while it is not laid out.
+  double? get layoutOffset => (_item?.parentData as SliverMultiBoxAdaptorParentData?)?.layoutOffset;
+
+  /// How tall it is laid out.
+  double get extent {
+    final item = _item;
+    return item != null && item.hasSize ? item.size.height : 0;
   }
 
   @override
@@ -1420,22 +1539,43 @@ class _MineRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           bubble,
-          AnimatedSize(
-            duration: fade,
-            alignment: Alignment.topRight,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 3, right: 2),
-              child: AnimatedSwitcher(
-                duration: fade,
-                layoutBuilder: (current, previous) => Stack(alignment: Alignment.topRight, children: [...previous, if (current != null) current]),
-                child: status,
-              ),
+          // The line under it is one line tall whatever it says, from
+          // "Sending…" to its time: nothing below moves as it changes. Not
+          // sized to its words as they change, which cut the new words
+          // (":54 PM") while the width eased; the old fade out over the new
+          // as wide as the wider of the two, right-aligned.
+          Padding(
+            padding: const EdgeInsets.only(top: 3, right: 2),
+            child: Stack(
+              alignment: Alignment.topRight,
+              children: [
+                const _StatusLineHeight(),
+                AnimatedSwitcher(
+                  duration: fade,
+                  layoutBuilder: (current, previous) => Stack(alignment: Alignment.topRight, children: [...previous, if (current != null) current]),
+                  child: status,
+                ),
+              ],
             ),
           ),
         ],
       ),
     );
   }
+}
+
+/// Holds a status line's height, at any text size: one line of its small
+/// print beside a tick.
+class _StatusLineHeight extends StatelessWidget {
+  const _StatusLineHeight();
+
+  @override
+  Widget build(BuildContext context) => const ExcludeSemantics(
+        child: Opacity(
+          opacity: 0,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [Text('Hg', style: TextStyle(fontSize: 11)), SizedBox(width: 1, height: 14)]),
+        ),
+      );
 }
 
 /// "Sending…" under a message on its way — only once it has taken longer
@@ -1748,14 +1888,24 @@ class _ErrorLine extends StatelessWidget {
 /// it. Its name, bubble and buttons come in together. Opacity and a
 /// translation only: nothing is laid out again while it plays. What the
 /// customer sends rises without the fade: it is whole from the first frame.
+///
+/// A reply that comes while the typing dots show takes their place: its
+/// rows fade in over 120 ms where they are, without the rise, while the
+/// dots fade out over the first of them — never a frame with neither.
 class _Entrance extends StatefulWidget {
-  const _Entrance({required this.message, required this.child});
+  const _Entrance({required this.message, required this.child, this.lead = false});
 
   /// The row's message; null for a row that is no message's.
   final Object? message;
+
+  /// The first of its message's rows.
+  final bool lead;
   final Widget child;
 
   static const time = Duration(milliseconds: 200);
+
+  /// How long a reply takes over from the dots.
+  static const crossFade = Duration(milliseconds: 120);
 
   /// How far below its place it starts, in logical pixels.
   static const rise = 7.0;
@@ -1771,6 +1921,10 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
   /// Decided once, as the rest: the customer's own message rises unfaded,
   /// and keeps the same tree when the server's copy takes its row over.
   bool _fade = true;
+  bool _rise = true;
+
+  /// The dots this row comes in over, fading out as it fades in.
+  _Dots? _dots;
 
   @override
   void initState() {
@@ -1778,12 +1932,16 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
     final message = widget.message;
     final c = context.getInheritedWidgetOfExactType<MessengerScope>()?.controller;
     if (message == null || c == null || !c.isArriving(message)) return;
+    final dots = context.findAncestorStateOfType<_ThreadState>()?._dotsFor(message);
     // Its whole time even with less motion asked for, as Intercom's: see
     // [fullTime].
-    final a = AnimationController(vsync: this, duration: _Entrance.time, animationBehavior: AnimationBehavior.preserve)..forward();
+    final a = AnimationController(vsync: this, duration: dots != null ? _Entrance.crossFade : _Entrance.time, animationBehavior: AnimationBehavior.preserve)
+      ..forward();
     _in = a;
     _fade = message is! OutgoingMessage;
-    _t = CurvedAnimation(parent: a, curve: Curves.easeOutCubic);
+    _rise = dots == null;
+    if (widget.lead) _dots = dots;
+    _t = CurvedAnimation(parent: a, curve: dots != null ? Curves.easeOut : Curves.easeOutCubic);
   }
 
   @override
@@ -1796,7 +1954,33 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
   Widget build(BuildContext context) {
     final t = _t;
     if (t == null) return widget.child;
-    return FadeTransition(opacity: _fade ? t : kAlwaysCompleteAnimation, child: _Rise(t, child: widget.child));
+    final shown = FadeTransition(opacity: _fade ? t : kAlwaysCompleteAnimation, child: _rise ? _Rise(t, child: widget.child) : widget.child);
+    final dots = _dots;
+    if (dots == null) return shown;
+    // The dots over the reply's first row, at its top: the same place in
+    // the thread, the face in the same column. Laid out by the row alone,
+    // and gone with the fade (the row keeps its place in the Stack).
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        shown,
+        Positioned(
+          left: 0,
+          right: 0,
+          top: 0,
+          child: IgnorePointer(
+            child: ExcludeSemantics(
+              child: AnimatedBuilder(
+                animation: t,
+                builder: (_, __) => t.value >= 1
+                    ? const SizedBox.shrink()
+                    : Opacity(opacity: (dots.shown * (1 - t.value)).clamp(0.0, 1.0), child: _TypingRow(author: dots.author)),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -1812,13 +1996,15 @@ class _Rise extends AnimatedWidget {
 }
 
 /// The typing row's place at the foot of the thread. It opens — fades in and
-/// grows — when someone starts typing, and closes the same way when they
-/// stop, after a moment: a teammate's "stopped typing" comes just before
-/// their message. When the reply is here the dots go at once and it takes
-/// their place, so the thread does not shrink and then grow again. For a
-/// reader up the thread the change is at once (the thread keeps the
-/// reader's place through it); with less motion asked for it plays, as
-/// Intercom's does (see [fullTime]).
+/// grows — when someone starts typing. When they stop it holds for 600 ms
+/// (a teammate's "stopped typing" comes just before their message), then
+/// closes over 300 ms, quickly at first and gently at the end. A reply
+/// takes its place: the row closes at once and the reply fades in over the
+/// dots as they fade out ([_Entrance]), so the thread does not shrink and
+/// then grow again, nor show a frame with neither. For a reader up the
+/// thread the change is at once (the thread keeps the reader's place
+/// through it); with less motion asked for it plays, as Intercom's does
+/// (see [fullTime]).
 class _TypingSlot extends StatefulWidget {
   const _TypingSlot({required this.author, required this.replies});
 
@@ -1828,6 +2014,10 @@ class _TypingSlot extends StatefulWidget {
   /// Everyone else's messages so far: one more is the reply.
   final int replies;
 
+  static const open = Duration(milliseconds: 200);
+  static const hold = Duration(milliseconds: 600);
+  static const close = Duration(milliseconds: 300);
+
   @override
   State<_TypingSlot> createState() => _TypingSlotState();
 }
@@ -1835,15 +2025,16 @@ class _TypingSlot extends StatefulWidget {
 class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderStateMixin {
   late final AnimationController _open = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 200),
-    // The first 250 ms of closing hold the row as it is: time for the reply.
-    reverseDuration: const Duration(milliseconds: 450),
+    duration: _TypingSlot.open,
+    // Closing, the first 600 ms hold the row as it is: time for the reply.
+    reverseDuration: _TypingSlot.hold + _TypingSlot.close,
     animationBehavior: AnimationBehavior.preserve,
   );
   late final Animation<double> _shown = CurvedAnimation(
     parent: _open,
     curve: Curves.easeOutCubic,
-    reverseCurve: const Interval(0, 0.45, curve: Curves.easeOutCubic),
+    // Played backwards: quick at first, gentle into place.
+    reverseCurve: Interval(0, _TypingSlot.close.inMilliseconds / (_TypingSlot.hold + _TypingSlot.close).inMilliseconds, curve: Curves.easeInCubic),
   );
 
   /// Who the row shows: kept while it closes.
@@ -1863,9 +2054,10 @@ class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderState
     super.dispose();
   }
 
-  /// The reader is at (or near) the latest, where the row is in view — or
-  /// on the way there.
-  bool get _animate => context.findAncestorStateOfType<_ThreadState>()?._atLatest ?? true;
+  /// The thread around it, if the reader is at (or near) the latest, where
+  /// the row is in view — or on the way there.
+  _ThreadState? get _thread => context.findAncestorStateOfType<_ThreadState>();
+  bool get _animate => _thread?._atLatest ?? true;
 
   @override
   void didUpdateWidget(_TypingSlot old) {
@@ -1879,8 +2071,14 @@ class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderState
         _open.forward();
       }
     } else if (_open.value > 0) {
-      if (!_animate || widget.replies > old.replies) {
-        _open.value = 0; // the reply takes its place
+      final reply = widget.replies > old.replies;
+      final shown = _who;
+      if (reply && _animate && shown != null) {
+        // The reply takes the place: it comes in over the dots as they go.
+        _thread?._dotsTaken(shown, _shown.value);
+        _open.value = 0;
+      } else if (!_animate || reply) {
+        _open.value = 0;
       } else if (_open.status != AnimationStatus.reverse) {
         _open.reverse();
       }
@@ -2566,12 +2764,21 @@ class _ComposerState extends State<_Composer> {
     super.dispose();
   }
 
+  /// Moves on at each Send. Send empties the box, and it is one line again
+  /// in the same frame, not eased down: the message lands in that frame and
+  /// the thread keeps every row where it was on the screen, then glides —
+  /// easing the box down under it as well dipped the thread before it rose.
+  /// A new easing box (its key) takes its first size as it is; the box
+  /// itself moves into it whole ([_boxKey]), the keyboard and all.
+  int _sends = 0;
+  final _boxKey = GlobalKey();
+
   void _send() {
     final c = context.messenger;
     final value = _text.text;
     if (value.trim().isEmpty) return;
     _text.clear();
-    setState(() {});
+    setState(() => _sends++);
     c.composerChanged(''); // what it sends was the draft
     c.send(value);
   }
@@ -2696,12 +2903,18 @@ class _ComposerState extends State<_Composer> {
           ],
         ),
       );
-    // A line more or less (typed, or sent): the box eases to its height from
+    // A line more or less as they type: the box eases to its height from
     // the bottom up, so the thread above moves over 150 ms, not 46 points
     // in one frame — with less motion asked for too, as Intercom's (see
-    // [fullTime]).
+    // [fullTime]). Emptied by Send, it is one line at once ([_sends]).
     return TextFieldTapRegion(
-      child: AnimatedSize(duration: fullTime(_Composer.grow), curve: Curves.easeOutCubic, alignment: Alignment.bottomCenter, child: box),
+      child: AnimatedSize(
+        key: ValueKey<int>(_sends),
+        duration: fullTime(_Composer.grow),
+        curve: Curves.easeOutCubic,
+        alignment: Alignment.bottomCenter,
+        child: KeyedSubtree(key: _boxKey, child: box),
+      ),
     );
   }
 }
