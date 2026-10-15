@@ -38,6 +38,9 @@ class FakeServer {
   int authStatus = 200;
   int uploads = 0;
 
+  /// How `/widget/article-reaction` answers.
+  int reactionStatus = 200;
+
   /// The customer's files by upload id, as `/widget/files/:id` serves them.
   final Map<String, List<int>> files = <String, List<int>>{};
 
@@ -63,6 +66,10 @@ class FakeServer {
           return bytes == null ? json(<String, dynamic>{'error': 'not_found'}, 404) : http.Response.bytes(bytes, 200);
         }
         if (path == '/widget/seen') return json(<String, dynamic>{'ok': true});
+        if (path == '/widget/article-reaction') {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          return reactionStatus == 200 ? json(<String, dynamic>{'ok': true, 'reaction': body['reaction']}) : json(<String, dynamic>{'error': 'nope'}, reactionStatus);
+        }
         if (path == '/widget/email') return json(<String, dynamic>{'ok': true});
         if (path == '/widget/unread') return json(<String, dynamic>{'unreadCount': 0});
         if (path == '/widget/uploads') {

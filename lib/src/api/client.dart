@@ -157,6 +157,13 @@ class MessengerApi {
     await _json('POST', '/widget/email', body: <String, dynamic>{'email': email});
   }
 
+  /// POST /widget/article-reaction — the customer's answer to "Did this
+  /// answer your question?" under an article: `sad`, `neutral` or `happy`.
+  /// The last one sent for an article is the one that counts.
+  Future<void> articleReaction(String slug, String reaction) async {
+    await _json('POST', '/widget/article-reaction', body: <String, dynamic>{'slug': slug, 'reaction': reaction});
+  }
+
   Future<void> registerPushToken(String pushToken, {required String platform, String? appId}) async {
     await _json('POST', '/widget/push-token', body: <String, dynamic>{
       'token': pushToken,

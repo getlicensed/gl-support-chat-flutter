@@ -640,6 +640,7 @@ class MessengerController extends ChangeNotifier {
     _files.clear();
     _articleRuns.clear();
     _articles.clear();
+    reactions.clear();
     emailSavedFor = null;
     _lastUnread = -1;
     _notify();
@@ -1655,6 +1656,26 @@ class MessengerController extends ChangeNotifier {
 
   /// The article, if it has already come: drawn in the first frame.
   Article? cachedArticle(String slug) => _articles[slug];
+
+  /// The customer's answer under each article they answered, by slug, while
+  /// they are signed in: `sad`, `neutral` or `happy`.
+  final Map<String, String> reactions = <String, String>{};
+
+  /// "Did this answer your question?" answered (or answered again). Shown at
+  /// once and kept, whatever the server says: a reaction that did not save
+  /// is not worth an error on the customer's screen, only a diagnostic
+  /// (`article_reaction_failed`).
+  Future<void> react(String slug, String reaction) async {
+    final epoch = _epoch;
+    reactions[slug] = reaction;
+    _notify();
+    try {
+      await api.articleReaction(slug, reaction);
+    } catch (e) {
+      if (epoch != _epoch) return;
+      _diag('article_reaction_failed', <String, Object?>{'status': e is ApiException ? e.status : 0, 'slug': slug});
+    }
+  }
 
   // ======================================================================
 

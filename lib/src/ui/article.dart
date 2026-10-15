@@ -4,6 +4,7 @@ import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart
 
 import '../api/models.dart';
 import 'common.dart';
+import 'navigation.dart';
 
 /// One help-centre article, drawn natively. The HTML comes from the help
 /// centre already sanitised (DOMPurify, the same as the public /help pages);
@@ -241,6 +242,8 @@ class _ArticleBody extends StatelessWidget {
             return null;
           },
         ),
+        const SizedBox(height: 28),
+        ArticleReactions(slug: a.slug),
         if (url != null) ...[
           const SizedBox(height: 20),
           Center(
@@ -295,6 +298,119 @@ class ArticleButton extends StatelessWidget {
           ),
           onPressed: onTap,
           child: Text(label, textAlign: TextAlign.center),
+        ),
+      ),
+    );
+  }
+}
+
+/// Under an article: "Did this answer your question?" and three faces. The
+/// one tapped grows, the others fade back; another tap changes it. Kept for
+/// the article while the customer is signed in, and sent to the team's
+/// reports. After 😞, a way to ask the team instead.
+class ArticleReactions extends StatelessWidget {
+  const ArticleReactions({super.key, required this.slug});
+  final String slug;
+
+  static const faces = <(String, String, String)>[
+    ('sad', '😞', 'Disappointed'),
+    ('neutral', '😐', 'Neutral'),
+    ('happy', '😃', 'Smiley'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.messenger;
+    final brand = c.brand;
+    final chosen = c.reactions[slug];
+    return Container(
+      padding: const EdgeInsets.only(top: 22),
+      decoration: const BoxDecoration(border: Border(top: BorderSide(color: Palette.border))),
+      child: Column(
+        children: [
+          const Text('Did this answer your question?', textAlign: TextAlign.center, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Palette.text)),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              for (final (value, emoji, label) in faces)
+                _Face(
+                  emoji: emoji,
+                  label: label,
+                  chosen: chosen == value,
+                  faded: chosen != null && chosen != value,
+                  onTap: () => c.react(slug, value),
+                ),
+            ],
+          ),
+          Reveal(
+            shown: chosen == 'sad',
+            child: Padding(
+              padding: const EdgeInsets.only(top: 14),
+              child: Column(
+                children: [
+                  const Text('Still need help?', textAlign: TextAlign.center, style: TextStyle(fontSize: 14, color: Palette.muted)),
+                  const SizedBox(height: 10),
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: brand.primary,
+                      foregroundColor: brand.onPrimary,
+                      minimumSize: const Size(RoundIconButton.minTarget, RoundIconButton.minTarget),
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      shape: const StadiumBorder(),
+                    ),
+                    onPressed: () => openLiveConversation(context),
+                    icon: const Icon(Icons.send, size: 16),
+                    label: const Text('Send us a message'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One face to tap: 56 points square, named for a screen reader.
+class _Face extends StatelessWidget {
+  const _Face({required this.emoji, required this.label, required this.chosen, required this.faded, required this.onTap});
+
+  final String emoji;
+  final String label;
+  final bool chosen;
+  final bool faded;
+  final VoidCallback onTap;
+
+  static const time = Duration(milliseconds: 200);
+
+  @override
+  Widget build(BuildContext context) {
+    final time = MediaQuery.disableAnimationsOf(context) ? Duration.zero : _Face.time;
+    return Semantics(
+      button: true,
+      selected: chosen,
+      label: label,
+      excludeSemantics: true,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 56,
+          height: 56,
+          child: Center(
+            child: AnimatedScale(
+              scale: chosen ? 1.3 : 1,
+              duration: time,
+              curve: Curves.easeOutBack,
+              child: AnimatedOpacity(
+                opacity: faded ? 0.4 : 1,
+                duration: time,
+                child: Text(emoji, style: const TextStyle(fontSize: 28)),
+              ),
+            ),
+          ),
         ),
       ),
     );

@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gl_support_chat/gl_support_chat.dart';
+import 'package:gl_support_chat/src/api/client.dart';
 import 'package:gl_support_chat/src/core/controller.dart';
 import 'package:gl_support_chat/src/core/session_store.dart';
 import 'package:gl_support_chat/src/messenger_page.dart';
@@ -864,6 +866,125 @@ void main() {
       final gone = await sample(tester, 14, () => opacityOf(tester, pill));
       expect(gone.where((o) => o > 0.02 && o < 0.98).length, greaterThanOrEqualTo(3), reason: 'fading out: $gone');
       expect(pill, findsNothing);
+    });
+  });
+
+  group('reactions under an article', () {
+    late List<(String, Map<String, Object?>)> diagnostics;
+
+    setUp(() {
+      diagnostics = <(String, Map<String, Object?>)>[];
+      server.article = <String, dynamic>{
+        'slug': 'renew',
+        'title': 'Renewing',
+        'description': null,
+        'html': '<p>You can renew up to four months early.</p>',
+        'url': 'https://help.test/help/renew',
+      };
+    });
+
+    Future<MessengerController> openArticle(WidgetTester tester) async {
+      usePhone(tester, const Phone('tall', Size(390, 1400)));
+      final api = server.api();
+      api.reauthenticate = () async => (await api.authenticate()).token;
+      final c = MessengerController(
+        api: api,
+        signIn: () => api.authenticate(visitorId: 'visitor-1'),
+        realtimeFactory: ({required String apiUrl, required String Function() token}) => FakeChannel(),
+        onDiagnostic: (event, detail) => diagnostics.add((event, detail)),
+      );
+      await tester.pumpWidget(MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.iOS),
+        home: GLSupportChatPage(controller: c, screen: GLSupportChatScreen.article('renew')),
+      ));
+      await settle(tester, frames: 14);
+      expect(find.text('Did this answer your question?'), findsOneWidget);
+      return c;
+    }
+
+    List<Map<String, dynamic>> sent() => server.requests
+        .where((r) => r.url.path == '/widget/article-reaction')
+        .map((r) => (jsonDecode(r.body) as Map).cast<String, dynamic>()..['auth'] = r.headers['authorization'])
+        .toList();
+
+    Finder face(String label) => find.bySemanticsLabel(label);
+    /// How large the face is drawn now (not where it is going).
+    double scaleOf(WidgetTester tester, String emoji) =>
+        tester.widget<ScaleTransition>(find.descendant(of: find.ancestor(of: find.text(emoji), matching: find.byType(AnimatedScale)), matching: find.byType(ScaleTransition))).scale.value;
+
+    testWidgets('three faces, named and 56 points each; a tap sends {slug, reaction} with the visitor token, the face grows and the others fade', (tester) async {
+      final semantics = tester.ensureSemantics();
+      await openArticle(tester);
+      for (final label in <String>['Disappointed', 'Neutral', 'Smiley']) {
+        expect(face(label), findsOneWidget);
+        expect(tester.getSize(find.ancestor(of: find.text(<String, String>{'Disappointed': '😞', 'Neutral': '😐', 'Smiley': '😃'}[label]!), matching: find.byType(InkWell))).width, greaterThanOrEqualTo(44));
+      }
+      await tester.tap(find.text('😃'));
+      await tester.pump();
+      final grows = await sample(tester, 14, () => scaleOf(tester, '😃'));
+      expect(grows.where((s) => s > 1.01 && s < 1.29).length, greaterThanOrEqualTo(3), reason: 'it grows over frames: $grows');
+      expect(scaleOf(tester, '😃'), 1.3);
+      expect(opacityOf(tester, find.text('😞')), closeTo(0.4, 0.01));
+      expect(opacityOf(tester, find.text('😐')), closeTo(0.4, 0.01));
+      expect(sent(), <Map<String, dynamic>>[<String, dynamic>{'slug': 'renew', 'reaction': 'happy', 'auth': 'Bearer tok-1'}]);
+      expect(find.text('Still need help?'), findsNothing, reason: 'only after 😞');
+
+      await tester.tap(find.text('😐'));
+      await settle(tester, frames: 5);
+      expect(sent().last['reaction'], 'neutral', reason: 'the choice can change');
+      expect(scaleOf(tester, '😐'), 1.3);
+      expect(scaleOf(tester, '😃'), 1);
+      semantics.dispose();
+    });
+
+    for (final status in <int>[400, 401, 404, 429]) {
+      testWidgets('the server says $status: the choice stays, nothing on screen, a diagnostic', (tester) async {
+        server.reactionStatus = status;
+        await openArticle(tester);
+        await tester.tap(find.text('😐'));
+        await settle(tester, frames: 6);
+        expect(scaleOf(tester, '😐'), 1.3, reason: 'still chosen');
+        expect(find.byType(SnackBar), findsNothing);
+        expect(find.textContaining('nope'), findsNothing);
+        expect(diagnostics.where((d) => d.$1 == 'article_reaction_failed').single.$2, <String, Object?>{'status': status, 'slug': 'renew'});
+      });
+    }
+
+    testWidgets('after 😞: "Still need help?" and a way into the conversation', (tester) async {
+      await openArticle(tester);
+      await tester.tap(find.text('😞'));
+      await tester.pump();
+      final heights = await sample(tester, 14, () => tester.getSize(find.byType(ArticleReactions)).height);
+      expect(heights.where((h) => h > heights.first + 1 && h < heights.last - 1).length, greaterThanOrEqualTo(3), reason: 'it opens, not pops: $heights');
+      expect(find.text('Still need help?'), findsOneWidget);
+      await tester.tap(find.text('Send us a message'));
+      await settle(tester);
+      expect(find.byType(ConversationPage), findsOneWidget);
+      expect(tester.widget<ConversationPage>(find.byType(ConversationPage)).conversationId, isNull, reason: 'the live conversation');
+    });
+
+    testWidgets('remembered for the article while signed in', (tester) async {
+      final c = await openArticle(tester);
+      await tester.tap(find.text('😃'));
+      await settle(tester, frames: 5);
+      expect(c.reactions, <String, String>{'renew': 'happy'});
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpWidget(MaterialApp(home: GLSupportChatPage(controller: c, screen: GLSupportChatScreen.article('renew'))));
+      await settle(tester, frames: 14);
+      expect(scaleOf(tester, '😃'), 1.3, reason: 'opened again: still chosen');
+      c.reset();
+      expect(c.reactions, isEmpty, reason: 'gone with the customer');
+    });
+
+    test('the API call: POST /widget/article-reaction with the bearer token, as every /widget call', () async {
+      final api = server.api()..token = 'tok-9';
+      await api.articleReaction('renew', 'sad');
+      final r = server.requests.single;
+      expect('${r.method} ${r.url}', 'POST https://api.test/widget/article-reaction');
+      expect(r.headers['authorization'], 'Bearer tok-9');
+      expect(jsonDecode(r.body), <String, dynamic>{'slug': 'renew', 'reaction': 'sad'});
+      server.reactionStatus = 429;
+      await expectLater(api.articleReaction('renew', 'sad'), throwsA(isA<ApiException>().having((e) => e.status, 'status', 429)));
     });
   });
 }

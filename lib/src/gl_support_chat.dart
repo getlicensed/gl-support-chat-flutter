@@ -24,6 +24,7 @@ import 'messenger_page.dart';
 /// - `messenger_failed`  `{reason, detail}` — `network` or `http_<status>`; the customer saw the fallback screen
 /// - `auth_failed`       `{status, detail, failures}` — the badge / push calls, not the messenger itself
 /// - `identity_rejected` `{code}` — the backend's signature was refused; the customer is anonymous until fixed
+/// - `article_reaction_failed` `{status, slug}` — a reaction under an article did not save (the customer still sees their choice)
 typedef GLSupportChatDiagnostics = void Function(String event, Map<String, Object?> detail);
 
 /// The signed identity your backend returns for the signed-in user — the
