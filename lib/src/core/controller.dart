@@ -603,6 +603,8 @@ class MessengerController extends ChangeNotifier {
     failure = null;
     session = null;
     visitorEmail = null;
+    // The name the skeleton greets with is the customer before's.
+    lookName = null;
     refreshing = false;
     liveLoaded = false;
     conversations = <ConversationSummary>[];

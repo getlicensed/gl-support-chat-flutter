@@ -97,6 +97,20 @@ void main() {
     return barriers.isEmpty ? const Color(0x00000000) : barriers.last;
   }
 
+  /// The product of every fade above [f] (its own and the routes', the
+  /// switcher's, the stagger's): how visible it is.
+  double opacityOf(WidgetTester tester, Finder f) {
+    if (f.evaluate().isEmpty) return 0;
+    var o = 1.0;
+    for (final e in find.ancestor(of: f.first, matching: find.byType(FadeTransition)).evaluate()) {
+      o *= (e.widget as FadeTransition).opacity.value;
+    }
+    for (final e in find.ancestor(of: f.first, matching: find.byType(Opacity)).evaluate()) {
+      o *= (e.widget as Opacity).opacity;
+    }
+    return o;
+  }
+
   group('the sheet', () {
     for (final (platform, radius) in <(TargetPlatform, double)>[(TargetPlatform.iOS, 12), (TargetPlatform.android, 16)]) {
       testWidgets('rises from below over a scrim, its top corners rounded ${radius.toInt()} (${platform.name})', (tester) async {
@@ -216,6 +230,29 @@ void main() {
       expect(sheetY(tester), isNull);
     });
 
+    testWidgets('less motion: Home, the skeleton, the tabs — everything is simply there, nothing left animating', (tester) async {
+      lessMotion(tester);
+      server.hold(<String>['/widget/auth']);
+      await host(tester, reduceMotion: true);
+      await tester.tap(find.text('Open support'));
+      await tester.pump();
+      await tester.pump(frame);
+      expect(find.byType(HomeSkeleton), findsOneWidget);
+      await tester.pump(const Duration(seconds: 1)); // the tap's own ripple, in the app
+      expect(tester.binding.hasScheduledFrame, isFalse, reason: 'the skeleton does not shimmer');
+      server.release();
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(frame);
+      expect(find.byType(HomeSkeleton), findsNothing);
+      expect(opacityOf(tester, find.text('Send us a message')), 1, reason: 'Home whole at once: no cross-fade, no stagger');
+      await tester.tap(find.text('Messages'));
+      await tester.pump();
+      expect(find.byType(HomeTab), findsNothing, reason: 'the tab changes at once');
+      await tester.pump(const Duration(seconds: 1)); // the tap's ripple
+      expect(tester.binding.hasScheduledFrame, isFalse);
+    });
+
     testWidgets('opened on a conversation (a push tapped): it rises with the sheet, never in from the side', (tester) async {
       final c = await host(tester, screen: GLSupportChatScreen.conversation('conv-1'));
       // What it shows already in (opened before): the conversation is
@@ -282,20 +319,6 @@ void main() {
       expect(scrim(tester), messengerScrim, reason: 'the strip stays as dim as it was');
     });
   });
-
-  /// The product of every fade above [f] (its own and the routes', the
-  /// switcher's, the stagger's): how visible it is.
-  double opacityOf(WidgetTester tester, Finder f) {
-    if (f.evaluate().isEmpty) return 0;
-    var o = 1.0;
-    for (final e in find.ancestor(of: f.first, matching: find.byType(FadeTransition)).evaluate()) {
-      o *= (e.widget as FadeTransition).opacity.value;
-    }
-    for (final e in find.ancestor(of: f.first, matching: find.byType(Opacity)).evaluate()) {
-      o *= (e.widget as Opacity).opacity;
-    }
-    return o;
-  }
 
   group('Home', () {
     // Short titles: the test font draws every letter a square, and a title
@@ -483,6 +506,29 @@ void main() {
       expect(find.text('How do I renew my SIA licence?'), findsOneWidget);
       await settle(tester);
       expect(count('POST /widget/auth'), 1, reason: "login's sign-in, used for both");
+      Navigator.of(host, rootNavigator: true).pop();
+      await settle(tester);
+    });
+
+    testWidgets("signed out while open: the skeleton never greets the next customer with the last one's name", (tester) async {
+      await configure(tester);
+      final host = await app(tester);
+      await GLSupportChat.login(const GLSupportChatIdentity(id: 'A', name: 'Ayesha Khan', hash: 'h'));
+      unawaited(GLSupportChat.present(host));
+      await settle(tester);
+      expect(find.text('Hi Ayesha 👋'), findsOneWidget);
+      server.hold(<String>['/widget/auth']);
+      unawaited(GLSupportChat.logout());
+      await settle(tester, frames: 4);
+      expect(find.byType(HomeSkeleton), findsOneWidget);
+      expect(find.textContaining('Ayesha'), findsNothing, reason: 'nobody signed in now');
+      unawaited(GLSupportChat.login(const GLSupportChatIdentity(id: 'B', name: 'Bilal Ahmed', hash: 'h')));
+      await settle(tester, frames: 4);
+      expect(find.byType(HomeSkeleton), findsOneWidget);
+      expect(find.text('Hi Bilal 👋'), findsOneWidget, reason: "the app's word for who it is, until the server's");
+      expect(find.textContaining('Ayesha'), findsNothing);
+      server.release();
+      await settle(tester);
       Navigator.of(host, rootNavigator: true).pop();
       await settle(tester);
     });

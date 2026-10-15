@@ -370,6 +370,8 @@ class GLSupportChat {
     if (c == null) return;
     if (_onScreen()) {
       c.reset();
+      final identity = _identity;
+      if (identity != null && identity.isVerified) c.lookName = identity.name;
       if (restart) unawaited(c.start());
       return;
     }
