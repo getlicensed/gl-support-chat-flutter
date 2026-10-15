@@ -1,3 +1,13 @@
+## 0.4.7
+
+The messenger moves with less motion asked for too, as Intercom's does. **Nothing to change in an app but the `ref`**; the Flutter floor stays 3.24, no dependency was added, and nothing public changed.
+
+- **The same motion whatever the phone's setting.** With Remove animations (Android) on, 0.4.6 stood still: the sheet was simply there and gone, Home, articles and tabs changed at once, the composer jumped. Intercom's messenger, measured, moves the same with reduced motion asked for as without, and we chose to match it. Now the sheet rises on its spring and goes down in 250 ms, a released drag springs back, Home's parts come in one after another, articles and what loads fade in, the tabs fade through, a reply fades in and the thread glides up to it, the typing dots open and close, the composer eases, the bars open softly and the skeleton shimmers, with the setting on as with it off.
+- **At their usual speed, too.** Remove animations also makes Flutter itself run every animation at 5% of its time, so the setting would have cut them to a frame even without 0.4.6's switch. The messenger's own animations opt out, and Flutter's widgets in it are given their time to match. A conversation or article opened in the sheet slides in at its usual speed as well.
+- iOS's Reduce Motion never reached any of it: Flutter reports it separately (`reduceMotion`), and the package did not read that. 0.4.6's notes said an iPhone with Reduce Motion stood still; it moved.
+- A jump from far up the thread to the latest is still a jump: scrolling through the whole history would be worse.
+- `test/frames_test.dart` and `test/motion_test.dart` run every check twice, as usual and with Remove animations on.
+
 ## 0.4.6
 
 Fluid from the first tap: the messenger no longer opens all at once. **Nothing to change in an app but the `ref`**; the Flutter floor stays 3.24, and no dependency was added.
