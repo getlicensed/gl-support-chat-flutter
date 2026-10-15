@@ -260,13 +260,18 @@ void main() {
         await tester.pump(const Duration(milliseconds: 16));
       }
       expect(c.outgoing, hasLength(1));
+      final row = find.byKey(ValueKey<String>('out:${c.outgoing.single.localId}'));
+      expect(row, findsWidgets);
       held.release();
-      // Frame by frame, to the first one that draws the confirmed bubble.
-      final confirmed = find.byKey(const ValueKey<String>('msg:photo-1'));
-      for (var i = 0; i < 40 && confirmed.evaluate().isEmpty; i++) {
+      // Frame by frame, to the first one that draws the confirmed bubble —
+      // in the same row: the server's copy takes it over.
+      for (var i = 0; i < 40 && c.outgoing.isNotEmpty; i++) {
         await tester.pump(const Duration(milliseconds: 5));
       }
-      expect(confirmed, findsWidgets);
+      await tester.pump(const Duration(milliseconds: 5));
+      expect(c.outgoing, isEmpty);
+      expect(row, findsWidgets);
+      expect(find.byKey(const ValueKey<String>('msg:photo-1')), findsNothing);
       expect(find.descendant(of: threadList(), matching: find.byType(CircularProgressIndicator)), findsNothing);
       expect(find.descendant(of: threadList(), matching: find.byWidgetPredicate((w) => w is Image && w.image is MemoryImage)), findsOneWidget);
     });

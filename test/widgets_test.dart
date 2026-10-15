@@ -111,9 +111,12 @@ void main() {
     await open(tester, screen: GLSupportChatScreen.messages);
     await settle(tester);
     expect(find.text('Which course is it about?'), findsOneWidget, reason: 'unread replies open the conversation from a push tap');
-    // As in Intercom: no composer at all while the buttons wait (7 Oct) — not a greyed-out one.
+    // While the buttons wait, a composer that cannot be typed in (15 Oct;
+    // none at all before), saying why, so the thread does not jump when
+    // typing is allowed.
     expect(find.byType(TextField), findsNothing);
-    expect(find.byTooltip('Send a photo'), findsNothing);
+    expect(find.text('Choose an option above'), findsOneWidget);
+    expect(tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.add_photo_alternate_outlined)).onPressed, isNull);
     await tester.tap(find.text('CCTV'));
     await tester.pump();
     expect(channel.requests.last.$1, 'workflow:choose');

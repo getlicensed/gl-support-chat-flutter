@@ -55,6 +55,15 @@ void main() {
     return found.isEmpty ? null : found.first.widget as FadeTransition;
   }
 
+  /// How visible a row of the thread is: every fade above it, multiplied.
+  double shownOf(WidgetTester tester, String text) {
+    var o = 1.0;
+    for (final e in find.descendant(of: threadList(), matching: find.ancestor(of: find.text(text), matching: find.byType(FadeTransition))).evaluate()) {
+      o *= (e.widget as FadeTransition).opacity.value;
+    }
+    return o;
+  }
+
   /// How far below its place a row of the thread is drawn.
   double riseOf(WidgetTester tester, String text) {
     var y = 0.0;
@@ -131,7 +140,7 @@ void main() {
       await settle(tester);
     });
 
-    testWidgets("the customer's own message rises in as they send it; the server's copy takes its place without a second fade", (tester) async {
+    testWidgets("the customer's own message rises in, whole, as they send it; the server's copy takes its place without a fade", (tester) async {
       final ack = Completer<void>();
       final slow = _SlowChannel(ack.future);
       slow.answers['visitor:message'] = (data) => <String, dynamic>{'ok': true, 'message': msg('m9', 'visitor', data['body'] as String, at: at(5))};
@@ -143,15 +152,15 @@ void main() {
       await tester.tap(find.byIcon(Icons.arrow_upward));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 16));
-      expect(find.text('Sending…'), findsOneWidget);
-      expect(fadeOf(tester, 'Thank you')!.opacity.value, inExclusiveRange(0, 1));
+      expect(shownOf(tester, 'Thank you'), 1, reason: 'whole from the first frame: no fade, no dimming');
+      expect(riseOf(tester, 'Thank you'), greaterThan(0), reason: 'it rises into place');
       await settle(tester, frames: 4);
       ack.complete();
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 16));
+      await tester.pump(const Duration(milliseconds: 200));
       expect(find.text('Sending…'), findsNothing);
       expect(find.byIcon(Icons.done), findsNWidgets(2), reason: 'delivered, as the first one was');
-      expect(fadeOf(tester, 'Thank you'), isNull, reason: 'the confirmed copy is simply there, in the same place');
+      expect(shownOf(tester, 'Thank you'), 1, reason: 'the confirmed copy is simply there, in the same place');
     });
 
     testWidgets("the customer's answer from a workflow button comes in with a fade; the server's copy of a bubble on its way does not", (tester) async {

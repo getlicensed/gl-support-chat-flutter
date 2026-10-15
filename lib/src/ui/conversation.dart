@@ -110,21 +110,33 @@ class _ConversationPageState extends State<ConversationPage> {
         if (m.fromVisitor) mine++;
       }
       // The first open shows Home before the open conversation is in: a
-      // spinner until it is, never the opening chips flashing before it.
-      thread = !c.liveLoaded && c.live.isEmpty && c.outgoing.isEmpty
-          ? const Center(child: CircularProgressIndicator())
-          : _Thread(
-              rows: _liveRows(context, c),
-              sent: mine,
-              received: c.live.length + c.outgoing.length - mine,
-              glide: motion && drawn.isNotEmpty,
-            );
+      // spinner until it is, never the opening chips flashing before it;
+      // then the thread fades in over it.
+      thread = _FadeSwitch(
+        child: !c.liveLoaded && c.live.isEmpty && c.outgoing.isEmpty
+            ? const Center(key: ValueKey<String>('loading'), child: CircularProgressIndicator())
+            : _Thread(
+                key: const ValueKey<String>('thread'),
+                rows: _liveRows(context, c),
+                sent: mine,
+                received: c.live.length + c.outgoing.length - mine,
+                glide: motion && drawn.isNotEmpty,
+              ),
+      );
     } else {
+      final id = widget.conversationId!;
       thread = FutureBuilder<ConversationDetail>(
         future: _past,
+        // Opened before: what it said then, at once, while it refreshes.
+        initialData: c.cachedConversation(id),
         builder: (context, snap) {
-          if (snap.hasError) {
-            return Center(
+          final d = snap.data ?? c.cachedConversation(id);
+          final Widget shown;
+          if (d != null) {
+            shown = _Thread(key: const ValueKey<String>('thread'), rows: _messageRows(context, c, d.messages.where((m) => !m.isSystem).toList(), agentSeenAt: d.agentLastSeenAt));
+          } else if (snap.hasError) {
+            shown = Center(
+              key: const ValueKey<String>('error'),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -133,10 +145,10 @@ class _ConversationPageState extends State<ConversationPage> {
                 ],
               ),
             );
+          } else {
+            shown = const Center(key: ValueKey<String>('loading'), child: CircularProgressIndicator());
           }
-          final d = snap.data;
-          if (d == null) return const Center(child: CircularProgressIndicator());
-          return _Thread(rows: _messageRows(context, c, d.messages.where((m) => !m.isSystem).toList(), agentSeenAt: d.agentLastSeenAt));
+          return _FadeSwitch(child: shown);
         },
       );
     }
@@ -171,7 +183,7 @@ class _ConversationPageState extends State<ConversationPage> {
                               // steps aside: the box and its Send need the room.
                               // Kept built, so it comes back whole, not a frame
                               // without its line.
-                              : Offstage(offstage: keyboard > 0, child: _PastFooter(conversationId: widget.conversationId!, past: _past)),
+                              : Offstage(offstage: keyboard > 0, child: _PastFooter(conversationId: widget.conversationId!, past: _past, cached: c.cachedConversation(widget.conversationId!))),
                         ),
                       ),
                     ],
@@ -314,7 +326,9 @@ List<Widget> _liveRows(BuildContext context, MessengerController c) {
   final notice = c.flowNotice;
   if (notice != null) rows.add('notice', _ErrorLine(notice));
   for (final out in c.outgoing) {
-    rows.add('out:${out.localId}', _OutgoingBubble(out: out), message: out);
+    // Its copy from the server is in the thread already, in this row.
+    if (c.isTakenOver(out)) continue;
+    rows.add('out:${out.localId}', _MineRow(out: out), message: out);
   }
   return rows.list;
 }
@@ -330,6 +344,7 @@ List<Widget> _messageRows(
 }) {
   final rows = into ?? _Rows();
   final label = c.session?.productLabel ?? '';
+  final live = into != null;
   for (var i = 0; i < messages.length; i++) {
     final m = messages[i];
     if (i == divider) rows.add('divider', const _NewMessagesDivider());
@@ -353,10 +368,16 @@ List<Widget> _messageRows(
     final bodyless = m.authorType == 'bot' && m.body.trim().isEmpty && m.attachments.isEmpty &&
         meta?.imageUrl == null && meta?.articleSlug == null && meta?.fileUrl == null;
     if (!bodyless) {
-      rows.add('msg:${m.id}', _Bubble(
-        message: m,
-        seen: m.fromVisitor && agentSeenAt != null && !m.createdAt.isAfter(agentSeenAt),
-      ), message: m);
+      if (m.fromVisitor) {
+        // Written here: the row it was drawn in while on its way.
+        final local = live ? c.sentAs(m) : null;
+        rows.add(local != null ? 'out:$local' : 'msg:${m.id}', _MineRow(
+          message: m,
+          seen: agentSeenAt != null && !m.createdAt.isAfter(agentSeenAt),
+        ), message: m);
+      } else {
+        rows.add('msg:${m.id}', _Bubble(message: m), message: m);
+      }
     }
     final csat = meta?.csatRatingId;
     if (m.authorType == 'bot' && csat != null) rows.add('csat:${m.id}', CsatCard(ratingId: csat, title: 'Tap a face'), message: m);
@@ -383,7 +404,7 @@ List<Widget> _messageRows(
 /// jump: what is on screen stays put for a frame, then glides up as they
 /// come in below ([glide]).
 class _Thread extends StatefulWidget {
-  const _Thread({required this.rows, this.sent = 0, this.received = 0, this.glide = false});
+  const _Thread({super.key, required this.rows, this.sent = 0, this.received = 0, this.glide = false});
   final List<Widget> rows;
 
   /// Some of the rows came in live (and the phone allows motion).
@@ -943,17 +964,19 @@ class _LiveFooter extends StatelessWidget {
 }
 
 class _PastFooter extends StatelessWidget {
-  const _PastFooter({required this.conversationId, required this.past});
+  const _PastFooter({required this.conversationId, required this.past, this.cached});
   final String conversationId;
   final Future<ConversationDetail>? past;
+  final ConversationDetail? cached;
 
   @override
   Widget build(BuildContext context) {
     final brand = context.brand;
     return FutureBuilder<ConversationDetail>(
       future: past,
+      initialData: cached,
       builder: (context, snap) {
-        final closed = snap.data?.open == false;
+        final closed = (snap.data ?? cached)?.open == false;
         return Container(
           width: double.infinity,
           padding: EdgeInsets.fromLTRB(16, 14, 16, 14 + MediaQuery.of(context).padding.bottom),
@@ -1110,11 +1133,12 @@ class _RichTextState extends State<_RichText> {
   }
 }
 
+/// A message in the thread: the team's, the AI's, the workflow's — or,
+/// inside [_MineRow], the customer's own.
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message, this.seen = false});
+  const _Bubble({required this.message});
 
   final ChatMessage message;
-  final bool seen;
 
   @override
   Widget build(BuildContext context) {
@@ -1128,14 +1152,7 @@ class _Bubble extends StatelessWidget {
     final bot = m.authorType == 'bot';
     final fg = mine ? brand.onPrimary : Palette.text;
     final children = <Widget>[
-      if (bot && meta?.imageUrl != null)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: Image.network(meta!.imageUrl!, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const SizedBox.shrink()),
-          ),
-        ),
+      if (bot && meta?.imageUrl != null) Padding(padding: const EdgeInsets.only(bottom: 8), child: _BotImage(url: meta!.imageUrl!)),
       for (final a in m.attachments) Padding(padding: const EdgeInsets.only(bottom: 6), child: _AttachmentView(attachment: a, mine: mine)),
       if (text.isNotEmpty) _RichText(text, color: fg, linkColor: mine ? fg : brand.primary),
       if (bot && meta?.articleSlug != null && context.messenger.session?.helpBaseUrl != null)
@@ -1153,9 +1170,39 @@ class _Bubble extends StatelessWidget {
         ),
     ];
     final onlyMedia = text.isEmpty && m.attachments.isNotEmpty && m.attachments.every((a) => a.isImage);
-    final bubble = Container(
+    final bubble = _BubbleBox(mine: mine, tight: onlyMedia, children: children);
+    final copied = GestureDetector(
+      onLongPress: text.isEmpty
+          ? null
+          : () {
+              Clipboard.setData(ClipboardData(text: text));
+              ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Copied')));
+            },
+      child: bubble,
+    );
+    if (mine) return copied;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [copied]),
+    );
+  }
+}
+
+/// A bubble's shape and colour: the brand colour on the right for the
+/// customer, grey on the left for everyone else. [tight]: a photo alone,
+/// with only a thin edge of the bubble around it.
+class _BubbleBox extends StatelessWidget {
+  const _BubbleBox({required this.mine, required this.children, this.tight = false});
+  final bool mine;
+  final bool tight;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = context.brand;
+    return Container(
       constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-      padding: onlyMedia ? const EdgeInsets.all(3) : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: tight ? const EdgeInsets.all(3) : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: mine ? brand.primary : Palette.agentBubble,
         borderRadius: BorderRadius.only(
@@ -1167,37 +1214,172 @@ class _Bubble extends StatelessWidget {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: children),
     );
+  }
+}
+
+/// One of the customer's own messages: its bubble, and the line under it —
+/// "Sending…" (only if it takes a while), why it failed, or its time and
+/// tick. The same row from the moment it is written to the server's copy
+/// (the copy takes its key), so the bubble never flickers and the line
+/// under it fades from one to the next. The bubble is whole at once: never
+/// dimmed while it goes.
+class _MineRow extends StatelessWidget {
+  const _MineRow({this.message, this.out, this.seen = false}) : assert((message == null) != (out == null));
+
+  /// The server's copy, once there is one.
+  final ChatMessage? message;
+
+  /// The message on its way, or one the server refused.
+  final OutgoingMessage? out;
+  final bool seen;
+
+  static const statusFade = Duration(milliseconds: 150);
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.messenger;
+    final brand = c.brand;
+    final m = message;
+    final o = out;
+    final Widget bubble;
+    final Widget status;
+    if (m != null) {
+      bubble = _Bubble(message: m);
+      status = Row(
+        key: const ValueKey<String>('sent'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(_clock(context, m.createdAt), style: const TextStyle(fontSize: 11, color: Palette.muted)),
+          const SizedBox(width: 4),
+          // ✓ delivered, ✓✓ the team has read it.
+          Icon(seen ? Icons.done_all : Icons.done, size: 14, color: seen ? Palette.body : Palette.muted, semanticLabel: seen ? 'Seen' : 'Delivered'),
+        ],
+      );
+    } else {
+      final image = o!.image;
+      bubble = AnimatedOpacity(
+        // Refused: dimmed beside the reason, softly.
+        opacity: o.failed ? 0.55 : 1,
+        duration: statusFade,
+        child: _BubbleBox(
+          mine: true,
+          tight: image != null && o.text.isEmpty,
+          children: [
+            if (image != null) _Photo(image: MemoryImage(image)),
+            if (o.text.isNotEmpty) Text(o.text, style: TextStyle(fontSize: 15, height: 1.45, color: brand.onPrimary)),
+          ],
+        ),
+      );
+      status = !o.failed
+          ? const _SendingLine(key: ValueKey<String>('sending'))
+          : Wrap(
+              key: const ValueKey<String>('failed'),
+              crossAxisAlignment: WrapCrossAlignment.center,
+              alignment: WrapAlignment.end,
+              children: [
+                Text(o.error!, textAlign: TextAlign.end, style: const TextStyle(fontSize: 12, color: Palette.error)),
+                TextButton(onPressed: () => c.retry(o), child: const Text('Try again')),
+                TextButton(onPressed: () => c.discard(o), child: const Text('Delete', style: TextStyle(color: Palette.muted))),
+              ],
+            );
+    }
+    final motion = !MediaQuery.disableAnimationsOf(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Column(
-        crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          GestureDetector(
-            onLongPress: text.isEmpty
-                ? null
-                : () {
-                    Clipboard.setData(ClipboardData(text: text));
-                    ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Copied')));
-                  },
-            child: bubble,
-          ),
-          if (mine)
-            Padding(
+          bubble,
+          AnimatedSize(
+            duration: motion ? statusFade : Duration.zero,
+            alignment: Alignment.topRight,
+            child: Padding(
               padding: const EdgeInsets.only(top: 3, right: 2),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(_clock(context, m.createdAt), style: const TextStyle(fontSize: 11, color: Palette.muted)),
-                  const SizedBox(width: 4),
-                  // ✓ delivered, ✓✓ the team has read it.
-                  Icon(seen ? Icons.done_all : Icons.done, size: 14, color: seen ? Palette.body : Palette.muted, semanticLabel: seen ? 'Seen' : 'Delivered'),
-                ],
+              child: AnimatedSwitcher(
+                duration: motion ? statusFade : Duration.zero,
+                layoutBuilder: (current, previous) => Stack(alignment: Alignment.topRight, children: [...previous, if (current != null) current]),
+                child: status,
               ),
             ),
+          ),
         ],
       ),
     );
   }
+}
+
+/// "Sending…" under a message on its way — only once it has taken longer
+/// than [wait]: most go through before that, and a word that flashes up and
+/// is gone reads as something wrong. Its line's room is kept meanwhile, so
+/// nothing moves when it shows.
+class _SendingLine extends StatefulWidget {
+  const _SendingLine({super.key});
+
+  static const wait = Duration(milliseconds: 600);
+
+  @override
+  State<_SendingLine> createState() => _SendingLineState();
+}
+
+class _SendingLineState extends State<_SendingLine> {
+  Timer? _wait;
+  bool _shown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _wait = Timer(_SendingLine.wait, () {
+      if (mounted) setState(() => _shown = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _wait?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedOpacity(
+        opacity: _shown ? 1 : 0,
+        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : _MineRow.statusFade,
+        child: const Text('Sending…', style: TextStyle(fontSize: 11, color: Palette.muted)),
+      );
+}
+
+/// A picture the workflow sends: in a 4:3 box from the start, on a light
+/// grey, so the thread does not jump when it loads; it fades in, whole.
+class _BotImage extends StatelessWidget {
+  const _BotImage({required this.url});
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: AspectRatio(
+        aspectRatio: 4 / 3,
+        child: ColoredBox(
+          color: Palette.fill,
+          child: Image.network(url, fit: BoxFit.contain, frameBuilder: fadeIn(), errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+        ),
+      ),
+    );
+  }
+}
+
+/// The thread's first load, a past conversation's: what comes fades in
+/// over what stood for it, in 200 ms.
+class _FadeSwitch extends StatelessWidget {
+  const _FadeSwitch({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => AnimatedSwitcher(
+        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
+        layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
+        child: child,
+      );
 }
 
 class _InBubbleCard extends StatelessWidget {
@@ -1312,7 +1494,7 @@ class _Photo extends StatelessWidget {
         borderRadius: BorderRadius.circular(15),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 260, minWidth: 120),
-          child: Image(image: image, fit: BoxFit.cover),
+          child: Image(image: image, fit: BoxFit.cover, frameBuilder: fadeIn()),
         ),
       ),
     );
@@ -1345,64 +1527,6 @@ class _FileChip extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// A message on its way, or one the server refused.
-class _OutgoingBubble extends StatelessWidget {
-  const _OutgoingBubble({required this.out});
-  final OutgoingMessage out;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.messenger;
-    final brand = c.brand;
-    final image = out.image;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Opacity(
-            opacity: out.failed ? 0.55 : 0.75,
-            child: Container(
-              constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-              padding: image != null && out.text.isEmpty ? const EdgeInsets.all(3) : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: brand.primary,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(18),
-                  topRight: Radius.circular(18),
-                  bottomLeft: Radius.circular(18),
-                  bottomRight: Radius.circular(4),
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (image != null) _Photo(image: MemoryImage(image)),
-                  if (out.text.isNotEmpty) Text(out.text, style: TextStyle(fontSize: 15, height: 1.45, color: brand.onPrimary)),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 3),
-          if (!out.failed)
-            const Text('Sending…', style: TextStyle(fontSize: 11, color: Palette.muted))
-          else
-            Wrap(
-              crossAxisAlignment: WrapCrossAlignment.center,
-              alignment: WrapAlignment.end,
-              children: [
-                Text(out.error!, textAlign: TextAlign.end, style: const TextStyle(fontSize: 12, color: Palette.error)),
-                TextButton(onPressed: () => c.retry(out), child: const Text('Try again')),
-                TextButton(onPressed: () => c.discard(out), child: const Text('Delete', style: TextStyle(color: Palette.muted))),
-              ],
-            ),
-        ],
       ),
     );
   }
@@ -1448,7 +1572,8 @@ class _ErrorLine extends StatelessWidget {
 /// scroll back to it, a reply first reached from up the thread, or the same
 /// message under a new key (an AI answer taking its real id) never plays
 /// it. Its name, bubble and buttons come in together. Opacity and a
-/// translation only: nothing is laid out again while it plays.
+/// translation only: nothing is laid out again while it plays. What the
+/// customer sends rises without the fade: it is whole from the first frame.
 class _Entrance extends StatefulWidget {
   const _Entrance({required this.message, required this.child});
 
@@ -1470,6 +1595,10 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
   AnimationController? _in;
   Animation<double>? _t;
 
+  /// Decided once, as the rest: the customer's own message rises unfaded,
+  /// and keeps the same tree when the server's copy takes its row over.
+  bool _fade = true;
+
   @override
   void initState() {
     super.initState();
@@ -1478,6 +1607,7 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
     if (message == null || c == null || !c.isArriving(message)) return;
     final a = AnimationController(vsync: this, duration: _Entrance.time)..forward();
     _in = a;
+    _fade = message is! OutgoingMessage;
     _t = CurvedAnimation(parent: a, curve: Curves.easeOutCubic);
   }
 
@@ -1491,7 +1621,7 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
   Widget build(BuildContext context) {
     final t = _t;
     if (t == null) return widget.child;
-    return FadeTransition(opacity: t, child: _Rise(t, child: widget.child));
+    return FadeTransition(opacity: _fade ? t : kAlwaysCompleteAnimation, child: _Rise(t, child: widget.child));
   }
 }
 
@@ -2222,6 +2352,9 @@ class _EmailBarState extends State<_EmailBar> {
 class _Composer extends StatefulWidget {
   const _Composer();
 
+  /// A line more or less, eased.
+  static const grow = Duration(milliseconds: 150);
+
   @override
   State<_Composer> createState() => _ComposerState();
 }
@@ -2312,9 +2445,10 @@ class _ComposerState extends State<_Composer> {
     final c = context.messenger;
     final brand = c.brand;
     final lock = c.composerLock;
-    // Waiting on a button or a detail above: no composer at all, as in
-    // Intercom — it comes back the moment typing is allowed.
-    if (lock != null) return SizedBox(height: MediaQuery.of(context).padding.bottom);
+    // Waiting on a button or a detail above (or for the thread to load): a
+    // composer that cannot be typed in, saying why, the height of the real
+    // one — the thread does not jump when typing is allowed.
+    if (lock != null) return _LockedComposer(hint: lock);
     // Not tied to the connection: the controller takes a message while it
     // connects and sends it once it can, so the customer is never left
     // looking at a grey Send button.
@@ -2322,8 +2456,7 @@ class _ComposerState extends State<_Composer> {
     // The photo and Send buttons belong to the field's tap region: tapping
     // them keeps the keyboard up, as in any chat app. A tap anywhere else —
     // the thread, the header — puts it away.
-    return TextFieldTapRegion(
-      child: Container(
+    final box = Container(
         padding: EdgeInsets.fromLTRB(8, 8, 10, 8 + MediaQuery.of(context).padding.bottom),
         decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Palette.border))),
         child: Row(
@@ -2348,20 +2481,7 @@ class _ComposerState extends State<_Composer> {
                 onTapOutside: dismissKeyboard,
                 style: fieldText,
                 cursorColor: brand.primary,
-                decoration: InputDecoration(
-                  hintText: 'Type a message…',
-                  // One line at any text size: a hint that wrapped held the
-                  // box two lines tall for one line of text.
-                  hintMaxLines: 1,
-                  hintStyle: const TextStyle(color: Palette.hint),
-                  isDense: true,
-                  filled: true,
-                  fillColor: Palette.input,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.border)),
-                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.border)),
-                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide(color: brand.primary)),
-                ),
+                decoration: _composerDecoration(brand, 'Type a message…'),
               ),
             ),
             const SizedBox(width: 6),
@@ -2379,6 +2499,79 @@ class _ComposerState extends State<_Composer> {
                     height: RoundIconButton.minTarget,
                     child: Icon(Icons.arrow_upward, color: canSend ? brand.onPrimary : Palette.faint),
                   ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    // A line more or less (typed, or sent): the box eases to its height from
+    // the bottom up, so the thread above moves over 150 ms, not 46 points
+    // in one frame.
+    return TextFieldTapRegion(
+      child: MediaQuery.disableAnimationsOf(context)
+          ? box
+          : AnimatedSize(duration: _Composer.grow, curve: Curves.easeOutCubic, alignment: Alignment.bottomCenter, child: box),
+    );
+  }
+}
+
+/// The message box's look, for the real composer and the locked one alike.
+InputDecoration _composerDecoration(BrandColors brand, String hint, {bool enabled = true}) => InputDecoration(
+      hintText: hint,
+      // One line at any text size: a hint that wrapped held the box two
+      // lines tall for one line of text.
+      hintMaxLines: 1,
+      hintStyle: const TextStyle(color: Palette.hint),
+      isDense: true,
+      filled: true,
+      fillColor: Palette.input,
+      enabled: enabled,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.border)),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.border)),
+      disabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.border)),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide(color: brand.primary)),
+    );
+
+/// The composer while typing waits on something above — a button to
+/// choose, a detail to give, the thread to load: the same box, saying what
+/// it waits for, that takes nothing. Not a text field: no keyboard, no focus.
+class _LockedComposer extends StatelessWidget {
+  const _LockedComposer({required this.hint});
+  final String hint;
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = context.brand;
+    final theme = Theme.of(context);
+    // The text a TextField would type in, so the box is the same height.
+    final style = (theme.useMaterial3 ? theme.textTheme.bodyLarge : theme.textTheme.titleMedium)!.merge(fieldText);
+    return ExcludeFocus(
+      child: Container(
+        padding: EdgeInsets.fromLTRB(8, 8, 10, 8 + MediaQuery.of(context).padding.bottom),
+        decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Palette.border))),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            const IconButton(tooltip: 'Send a photo', onPressed: null, icon: Icon(Icons.add_photo_alternate_outlined)),
+            Expanded(
+              child: InputDecorator(
+                decoration: _composerDecoration(brand, hint, enabled: false),
+                baseStyle: style,
+                isEmpty: true,
+                child: Text(' ', style: style, maxLines: 1),
+              ),
+            ),
+            const SizedBox(width: 6),
+            const ExcludeSemantics(
+              child: Material(
+                color: Palette.fill,
+                shape: CircleBorder(),
+                child: SizedBox(
+                  width: RoundIconButton.minTarget,
+                  height: RoundIconButton.minTarget,
+                  child: Icon(Icons.arrow_upward, color: Palette.faint),
                 ),
               ),
             ),

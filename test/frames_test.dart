@@ -625,4 +625,159 @@ void main() {
       expect(tester.getCenter(open).dx, closeTo(195, 1), reason: 'centred, with room around it');
     });
   });
+
+  group('the thread', () {
+    Finder page() => find.byType(ConversationPage);
+    Finder threadList() => find.descendant(of: page(), matching: find.byType(ListView));
+    Finder field() => find.descendant(of: page(), matching: find.byType(TextField)).last;
+
+    /// The top of the composer (the thread above it ends there; the thread's
+    /// own rect also moves with its glide).
+    double footerTop(WidgetTester tester) => tester.getTopLeft(find.descendant(of: page(), matching: find.byType(AnimatedSize)).last).dy;
+
+    Future<ManualChannel> openChat(WidgetTester tester) async {
+      final manual = ManualChannel(autoConnect: true);
+      usePhone(tester, Phone.iphone13);
+      final c = controllerOn(server, manual);
+      await tester.pumpWidget(MaterialApp(
+        theme: ThemeData(platform: TargetPlatform.iOS),
+        home: GLSupportChatPage(controller: c, screen: GLSupportChatScreen.conversation('conv-1')),
+      ));
+      await settle(tester, frames: 14);
+      expect(page(), findsOneWidget);
+      return manual;
+    }
+
+    testWidgets('the composer grows a line at a time over 150 ms, and the thread with it — no 46-point jump; it shrinks the same way on Send', (tester) async {
+      final manual = await openChat(tester);
+      manual.answers['visitor:message'] = echo(<String>[]);
+      final one = tester.getSize(field()).height;
+      final before = footerTop(tester);
+      await tester.enterText(field(), 'line one\nline two\nline three');
+      await tester.pump();
+      final tops = await sample(tester, 12, () => footerTop(tester));
+      final steps = <double>[before, ...tops];
+      var moving = 0;
+      for (var i = 1; i < steps.length; i++) {
+        final d = steps[i - 1] - steps[i];
+        expect(d, greaterThanOrEqualTo(-0.01), reason: 'growing only');
+        expect(d, lessThan(30), reason: 'frame $i moved ${d.toStringAsFixed(1)}: no jump');
+        if (d > 0.5) moving++;
+      }
+      expect(moving, greaterThanOrEqualTo(4), reason: 'over several frames');
+      // One line, the row is the photo button's 48; three, the field's.
+      expect(before - steps.last, closeTo(tester.getSize(field()).height - (one > 48 ? one : 48), 0.5), reason: 'by exactly the two lines');
+
+      await tester.tap(find.byIcon(Icons.arrow_upward));
+      await tester.pump();
+      final back = await sample(tester, 14, () => footerTop(tester));
+      expect(back.first, lessThan(before - 10), reason: 'not snapped back in one frame');
+      expect(back.last, closeTo(before, 0.5));
+    });
+
+    testWidgets('Send: the bubble is whole at once; "Sending…" only after 600 ms; the server\'s copy keeps the row, its time fading in', (tester) async {
+      final manual = await openChat(tester);
+      manual.answers['visitor:message'] = echo(<String>[]);
+      manual.holdAcks = Completer<void>();
+      await tester.enterText(field(), 'Is it posted?');
+      await tester.pump();
+      await tester.tap(find.byIcon(Icons.arrow_upward));
+      final bubble = find.descendant(of: threadList(), matching: find.text('Is it posted?'));
+      final sending = find.text('Sending…');
+      final early = <(double, double)>[];
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(frame);
+        early.add((opacityOf(tester, bubble), opacityOf(tester, sending)));
+      }
+      for (var i = 0; i < 40; i++) {
+        expect(early[i].$1, 1, reason: 'frame ${i + 1}: whole, never dimmed or faded');
+        if ((i + 1) * 16 < 600) expect(early[i].$2, 0, reason: 'frame ${i + 1}: nothing said yet');
+      }
+      expect(early.last.$2, greaterThan(0), reason: 'slow: now it says so');
+      final row = find.byKey(const ValueKey<String>('out:local-1'));
+      expect(row, findsWidgets);
+      manual.holdAcks!.complete();
+      final after = <(double, double)>[];
+      for (var i = 0; i < 14; i++) {
+        await tester.pump(frame);
+        after.add((opacityOf(tester, sending), opacityOf(tester, find.byIcon(Icons.done).last)));
+      }
+      expect(row, findsWidgets, reason: 'the same row, now the server\'s copy');
+      expect(find.byKey(const ValueKey<String>('msg:sent-1')), findsNothing);
+      expect(after.where((a) => a.$1 > 0.02 && a.$1 < 0.98).length, greaterThanOrEqualTo(3), reason: '"Sending…" fades: $after');
+      expect(after.last, (0.0, 1.0));
+      expect(opacityOf(tester, bubble), 1);
+    });
+
+    testWidgets('the open conversation, the first time: a spinner, then the thread fades in; the composer waits at its own height', (tester) async {
+      server.hold(<String>['/widget/messages']);
+      await host(tester);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      await tester.tap(find.text('Send us a message'));
+      await settle(tester);
+      expect(find.descendant(of: page(), matching: find.byType(CircularProgressIndicator)), findsOneWidget);
+      expect(find.descendant(of: page(), matching: find.byType(TextField)), findsNothing, reason: 'nothing to type in yet');
+      expect(find.text('Loading…'), findsOneWidget, reason: 'the locked composer says why');
+      final lockedTop = tester.getTopLeft(find.text('Loading…')).dy;
+      server.release();
+      await tester.pump();
+      final seen = <double>[];
+      for (var i = 0; i < 16; i++) {
+        await tester.pump(frame);
+        seen.add(opacityOf(tester, find.descendant(of: page(), matching: find.text('Let me check.'))));
+      }
+      expect(seen.where((o) => o > 0.02 && o < 0.98).length, greaterThanOrEqualTo(5), reason: 'a fade, not a pop: $seen');
+      expect(seen.last, 1);
+      expect(find.byType(TextField), findsOneWidget);
+      expect(tester.getTopLeft(find.text('Type a message…')).dy, closeTo(lockedTop, 0.5), reason: 'the composer did not move');
+    });
+
+    testWidgets('a past conversation opened again is there at once, and refreshes behind', (tester) async {
+      server.conversations = <Map<String, dynamic>>[row('conv-1', body: 'Let me check.'), row('old', open: false, body: 'Your refund has gone through.')];
+      server.details['old'] = detail('old', <Map<String, dynamic>>[
+        msg('a', 'visitor', 'Can I have a refund?', conversationId: 'old'),
+        msg('b', 'agent', 'Your refund has gone through.', conversationId: 'old'),
+      ], open: false);
+      await host(tester);
+      await tester.tap(find.text('Open support'));
+      await settle(tester);
+      await tester.tap(find.text('Messages'));
+      await settle(tester);
+      await tester.tap(find.text('Your refund has gone through.'));
+      await settle(tester);
+      expect(find.text('Can I have a refund?'), findsOneWidget);
+      await tester.tap(find.byTooltip('Back').last);
+      await settle(tester);
+
+      server.hold(<String>['/widget/conversations/old']);
+      server.details['old'] = detail('old', <Map<String, dynamic>>[
+        msg('a', 'visitor', 'Can I have a refund?', conversationId: 'old'),
+        msg('b', 'agent', 'Your refund has gone through.', conversationId: 'old'),
+        msg('c', 'agent', 'And the receipt is on its way.', conversationId: 'old'),
+      ], open: false);
+      await tester.tap(find.text('Your refund has gone through.').first);
+      await tester.pump();
+      await tester.pump(frame);
+      expect(find.text('Can I have a refund?'), findsOneWidget, reason: 'what it said last time, before any answer');
+      expect(find.descendant(of: page(), matching: find.byType(CircularProgressIndicator)), findsNothing);
+      server.release();
+      await settle(tester);
+      expect(find.text('And the receipt is on its way.'), findsOneWidget, reason: 'refreshed behind');
+    });
+
+    testWidgets("the workflow's picture holds its 4:3 room from the start", (tester) async {
+      server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
+        msg('p', 'bot', 'Here is the map.', meta: <String, dynamic>{
+          'image': <String, dynamic>{'url': 'https://cdn.test/map.png'},
+        }),
+      ]);
+      await openChat(tester);
+      final box = find.descendant(of: threadList(), matching: find.byType(AspectRatio));
+      expect(box, findsOneWidget);
+      final size = tester.getSize(box);
+      expect(size.width / size.height, closeTo(4 / 3, 0.01));
+      expect(size.height, greaterThan(100), reason: 'its room taken before the picture loads');
+    });
+  });
 }

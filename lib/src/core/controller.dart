@@ -180,6 +180,24 @@ class MessengerController extends ChangeNotifier {
     }
   }
 
+  /// The row each of the customer's messages was drawn in while it was on
+  /// its way (its local id), by the server's id: the server's copy takes
+  /// that row over, rather than a new row replacing it.
+  final Map<String, String> _sentAs = <String, String>{};
+  final Set<String> _taken = <String>{};
+
+  /// The local id [m] was written under, if it was written here.
+  String? sentAs(ChatMessage m) => _sentAs[m.id];
+
+  /// [out]'s copy from the server is in the thread: it is drawn there.
+  bool isTakenOver(OutgoingMessage out) => _taken.contains(out.localId);
+
+  void _takeOver(ChatMessage m, OutgoingMessage out) {
+    if (_sentAs.containsKey(m.id) || _taken.contains(out.localId)) return;
+    _sentAs[m.id] = out.localId;
+    _taken.add(out.localId);
+  }
+
   /// What the customer has typed and not sent ([composerChanged] keeps it),
   /// there again at the next open; dropped with everything else when
   /// someone else signs in.
@@ -603,6 +621,9 @@ class MessengerController extends ChangeNotifier {
     collectError = null;
     typingAuthor = null;
     _arriving.clear();
+    _sentAs.clear();
+    _taken.clear();
+    _past.clear();
     sendError = null;
     // The screen that showed the customer before goes in a moment; until
     // then nothing that arrives for the next one counts as read.
@@ -893,8 +914,21 @@ class MessengerController extends ChangeNotifier {
       }
     }
     // It comes in with a fade — unless it is the server's copy of a bubble
-    // already on screen, which simply takes that bubble's place.
-    if (!msg.fromVisitor || !outgoing.any((o) => _isCopyOf(msg, o))) _arriving.add(msg);
+    // already on screen, which simply takes that bubble's place (its row).
+    OutgoingMessage? copied;
+    if (msg.fromVisitor) {
+      for (final o in outgoing) {
+        if (!o.failed && !_taken.contains(o.localId) && _isCopyOf(msg, o)) {
+          copied = o;
+          break;
+        }
+      }
+    }
+    if (copied != null) {
+      _takeOver(msg, copied);
+    } else if (!msg.fromVisitor || !outgoing.any((o) => _isCopyOf(msg, o))) {
+      _arriving.add(msg);
+    }
     live.add(msg);
     _arrivedAfterAll(msg);
     _notify();
@@ -908,6 +942,7 @@ class MessengerController extends ChangeNotifier {
   void _arrivedAfterAll(ChatMessage m) {
     for (final out in outgoing) {
       if (!out._noAnswer || !out.failed || !_isCopyOf(m, out)) continue;
+      _takeOver(m, out);
       outgoing.remove(out);
       if (!outgoing.any((o) => o.failed)) sendError = null;
       return;
@@ -1199,6 +1234,7 @@ class MessengerController extends ChangeNotifier {
       }
       if (ack['ok'] == true && ack['message'] is Map) {
         final msg = ChatMessage.fromJson(Map<String, dynamic>.from(ack['message'] as Map));
+        _takeOver(msg, out);
         outgoing.remove(out);
         // The server put it in its open conversation: that is the live one
         // now, even if the one shown had been closed meanwhile.
@@ -1523,12 +1559,20 @@ class MessengerController extends ChangeNotifier {
 
   // ---- other conversations, files, help ---------------------------------------------
 
+  /// The past conversations opened while this customer is signed in: one
+  /// opened again shows at once, and refreshes behind.
+  final Map<String, ConversationDetail> _past = <String, ConversationDetail>{};
+
+  /// [id] as it was last fetched, if it has been.
+  ConversationDetail? cachedConversation(String id) => _past[id];
+
   /// One of the customer's conversations, in full (the closed ones too).
   Future<ConversationDetail> loadConversation(String id) async {
     final epoch = _epoch;
     final d = await api.conversation(id);
     // Someone else signed in while it loaded: not theirs to see.
     if (epoch != _epoch) throw const ApiException(401, 'Signed out');
+    _past[id] = d;
     _seedCsat(d.csat);
     _zeroUnread(id);
     unawaited(api.seen(id).catchError((Object _) {}));
