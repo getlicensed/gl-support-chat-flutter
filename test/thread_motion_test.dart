@@ -38,15 +38,24 @@ void thread(TargetPlatform platform, Phone phone) {
     await tester.enterText(composer(), 'Line one\nLine two\nLine three\nLine four\nLine five');
     await frames(tester, 15);
     final above = inThread('You are welcome');
+    // Their message before, whose line ("Seen") goes to the new one.
+    final theirs = inThread('Thank you!');
     final tall = tester.getRect(composer()).height;
     final before = topOf(tester, above);
     await tester.tap(find.byIcon(Icons.arrow_upward));
     final tops = <double>[before];
+    double theirTop() => theirs.evaluate().isEmpty ? double.nan : topOf(tester, theirs);
+    final theirTops = <double>[theirTop()];
     final fields = <double>[];
     for (var i = 0; i < 30; i++) {
       await tester.pump(frame);
       tops.add(topOf(tester, above));
+      theirTops.add(theirTop());
       fields.add(tester.getRect(composer()).height);
+    }
+    for (var i = 1; i < theirTops.length; i++) {
+      if (theirTops[i].isNaN || theirTops[i - 1].isNaN) continue; // risen out of view
+      expect(theirTops[i] - theirTops[i - 1], lessThan(0.5), reason: 'frame $i: the bubble whose line went only rises: $theirTops');
     }
     expect(fields.first, lessThan(tall - 40), reason: 'one line in the first frame: ${fields.first} from $tall');
     expect(fields.toSet(), hasLength(1), reason: 'and stays: $fields');
@@ -100,6 +109,40 @@ void thread(TargetPlatform platform, Phone phone) {
     expect(find.text('New message'), findsNothing, reason: 'all at the latest');
     expect(scrollOf(tester), 0);
   });
+
+  for (final (thread, long, reply) in <(String, int, String)>[
+    ('a long thread', 20, 'Found it: it was delivered to your post office on Monday.'),
+    // A short thread a tall reply takes past the screen: the shift and the scroll both hold it.
+    ('a short thread', 0, 'Found it. ' * 15),
+  ]) {
+  testWidgets('$thread, a reply under a finger resting on it: nothing moves under the finger; let go, the thread goes down to the reply', (tester) async {
+    final (_, channel) = await openThread(tester, threadServer(long: long), platform: platform, phone: phone);
+    final above = inThread('You are welcome');
+    final finger = await tester.startGesture(tester.getCenter(above));
+    await tester.pump(const Duration(milliseconds: 50));
+    final held = topOf(tester, above);
+    channel.server('message:created', msg('r1', 'agent', reply.trim(), at: now()));
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(frame);
+      expect(topOf(tester, above), closeTo(held, 0.01), reason: 'frame $i: under the finger, the thread stays');
+    }
+    await finger.up();
+    // The message above, while it is still in view: it only rises.
+    final tops = <double>[held];
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(frame);
+      tops.add(above.evaluate().isEmpty ? double.nan : topOf(tester, above));
+    }
+    expect(tops[4], lessThan(held - 5), reason: 'let go: it goes down to the reply: $tops');
+    for (var i = 1; i < tops.length; i++) {
+      if (tops[i].isNaN || tops[i - 1].isNaN) continue;
+      expect(tops[i], lessThanOrEqualTo(tops[i - 1] + 0.01), reason: 'only up: $tops');
+    }
+    expect(scrollOf(tester), 0, reason: 'at the latest');
+    expect(tester.getRect(inThread('Found it')).bottom, lessThanOrEqualTo(tester.getRect(threadList()).bottom), reason: 'the reply in view');
+    expect(find.text('New message'), findsNothing);
+  });
+  }
 
   testWidgets('typing stops: the dots hold 600 ms, then close over 300 ms, quickly at first and gently into place', (tester) async {
     final (_, channel) = await openThread(tester, threadServer(long: 20), platform: platform, phone: phone);

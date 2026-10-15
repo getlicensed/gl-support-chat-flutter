@@ -99,7 +99,13 @@ class _MessengerSelectorState<T> extends State<MessengerSelector<T>> {
   @override
   void didUpdateWidget(MessengerSelector<T> oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _value = widget.select(_c!);
+    // The same screen given another customer's controller: listen to that one.
+    final c = MessengerScope.read(context);
+    if (!identical(c, _c)) {
+      _c?.removeListener(_changed);
+      _c = c..addListener(_changed);
+    }
+    _value = widget.select(c);
   }
 
   @override
@@ -724,7 +730,11 @@ class _RevealState extends State<Reveal> with SingleTickerProviderStateMixin {
   // Its whole time even with less motion asked for: see [fullTime].
   late final AnimationController _open =
       AnimationController(vsync: this, duration: Reveal.time, value: widget.shown ? 1 : 0, animationBehavior: AnimationBehavior.preserve);
-  late final CurvedAnimation _t = CurvedAnimation(parent: _open, curve: Curves.easeOutCubic);
+  // Closing is the opening's mirror: quick at first, gentle at the end. (The
+  // same curve played backwards closed slowly, then all at once: a line
+  // under a message dropped the bubble above it late, against the thread's
+  // glide.)
+  late final CurvedAnimation _t = CurvedAnimation(parent: _open, curve: Curves.easeOutCubic, reverseCurve: Curves.easeInCubic);
   late Widget _last = widget.child;
 
   @override
@@ -756,7 +766,9 @@ class _RevealState extends State<Reveal> with SingleTickerProviderStateMixin {
         if (!widget.size) return faded;
         // SizeTransition's own alignment is spelt differently before and
         // after Flutter 3.41: the clip and the factor by hand work on both.
-        return ClipRect(child: Align(alignment: Alignment.topCenter, heightFactor: _t.value, child: faded));
+        // As wide as what it shows, not the whole row: a line under a
+        // message stays at the bubble's edge.
+        return ClipRect(child: Align(alignment: Alignment.topCenter, widthFactor: 1, heightFactor: _t.value, child: faded));
       },
     );
   }

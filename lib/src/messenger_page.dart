@@ -293,7 +293,11 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
   @override
   Widget build(BuildContext context) {
     final c = widget.controller;
-    if (c == null) return _FallbackScreen(fallback: widget.fallback, browserUrl: widget.browserUrl);
+    if (c == null) {
+      _changes?.dispose();
+      _changes = null;
+      return _FallbackScreen(fallback: widget.fallback, browserUrl: widget.browserUrl);
+    }
     var changes = _changes;
     if (changes == null || !identical(changes.controller, c)) {
       changes?.dispose();

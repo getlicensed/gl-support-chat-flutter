@@ -534,6 +534,9 @@ List<Widget> _messageRows(
   final into = run ?? _Run(_Rows(cache));
   final rows = into.rows;
   final label = c.session?.productLabel ?? '';
+  // A teammate who has answered has seen what came before, whatever the
+  // seen receipts say.
+  final lastAnswer = messages.lastIndexWhere((m) => m.authorType == 'agent');
   for (var i = 0; i < messages.length; i++) {
     final m = messages[i];
     if (i == divider) into.between(() => rows.add('divider', null, () => const _NewMessagesDivider()));
@@ -548,8 +551,9 @@ List<Widget> _messageRows(
           // Live, its line listens for the team's seen receipts itself; in a
           // past conversation it is what was fetched.
           final seenAt = live ? null : agentSeenAt;
-          rows.add(local != null ? 'out:$local' : 'msg:${m.id}', (m, m.id, m.body, pos, status, first, seenAt),
-              () => _MineRow(message: m, pos: pos, first: first, status: status, seenAt: seenAt, live: live), message: m);
+          final answered = i < lastAnswer;
+          rows.add(local != null ? 'out:$local' : 'msg:${m.id}', (m, m.id, m.body, pos, status, first, seenAt, answered),
+              () => _MineRow(message: m, pos: pos, first: first, status: status, seenAt: seenAt, answered: answered, live: live), message: m);
         });
       } else {
         final name = _authorName(m, label);
@@ -645,6 +649,20 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   /// The glide moves the scroll offset as well as the shift; not once the
   /// reader's finger has the thread.
   bool _glideScrolls = true;
+
+  /// Fingers on the thread now: while there are, a glide leaves the scroll
+  /// offset to them.
+  int _fingers = 0;
+
+  /// A finger came onto the thread on its way to the latest (a glide, or
+  /// rows landing under it): where it then was. While the finger stays,
+  /// nothing moves under it; once it lets go, the thread goes on down —
+  /// unless the finger took the reader up the thread meanwhile.
+  double? _heldUnderFinger;
+
+  /// Rows landed under the finger: if the reader went up meanwhile, the
+  /// pill says so.
+  bool _landedUnderFinger = false;
 
   /// What scrolling cannot take of the glide (a thread shorter than the
   /// screen does not scroll): the rows are drawn this much lower (higher,
@@ -777,6 +795,8 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
     // For this update's layout only: a later one is the reader scrolling.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _anchor = null;
+      // Not drawn after all (the list was not painted): straight down.
+      if (_landing && mounted) _toLatest();
       _landing = false;
     });
   }
@@ -817,6 +837,7 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
       final held = _held(_scroll.position);
       if (held != null) {
         _shift = held - _scroll.position.pixels;
+        if (_fingers > 0) _heldUnderFinger = _scroll.position.pixels;
         _glideFrom(held);
       }
     }
@@ -827,6 +848,13 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   /// the latest. The speed it had carries on, and what came in adds a
   /// push of its own, so it moves from the first frame after.
   void _glideFrom(double from) {
+    if (_fingers > 0) {
+      // A finger on the thread: nothing moves under it until it lets go.
+      _glide.stop();
+      _heldUnderFinger = _scroll.position.pixels;
+      _landedUnderFinger = true;
+      return;
+    }
     final now = _glide.isAnimating ? _glide.value : 0.0;
     final speed = _glide.isAnimating ? _glide.velocity : 0.0;
     _glideScrolls = true;
@@ -836,12 +864,14 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   void _onGlide() {
     if (!_scroll.hasClients) return;
     final d = _glide.value;
-    final position = _scroll.position;
-    var pixels = position.pixels;
-    if (_glideScrolls) {
-      pixels = d.clamp(position.minScrollExtent, position.maxScrollExtent);
-      if (pixels != position.pixels) position.jumpTo(pixels);
+    if (!_glideScrolls) {
+      // The finger has the scroll: the spring runs on the shift alone.
+      _setShift(d);
+      return;
     }
+    final position = _scroll.position;
+    final pixels = d.clamp(position.minScrollExtent, position.maxScrollExtent);
+    if (pixels != position.pixels) position.jumpTo(pixels);
     _setShift(d - pixels);
   }
 
@@ -861,14 +891,33 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   /// A finger on the thread: it is the reader's now. The glide leaves the
   /// scroll offset where it is; what was drawn shifted eases on into place.
   void _fingerDown(PointerDownEvent _) {
-    if (!_gliding) return;
-    _glideScrolls = false;
-    final speed = _glide.velocity;
-    if (_shift == 0) {
-      _glide.stop();
-    } else {
-      _glide.animateWith(SpringSimulation(_spring, _shift, 0, speed, tolerance: _tolerance));
+    _fingers++;
+    if (!_gliding || !_scroll.hasClients) return;
+    _glide.stop();
+    _heldUnderFinger = _scroll.offset;
+  }
+
+  /// The last finger let go. If it came onto the thread on its way down
+  /// and the reader is still about where it was, the thread goes on down;
+  /// if they went up meanwhile, what was drawn shifted eases into place
+  /// alone, and rows that landed under the finger bring the pill.
+  void _fingerUp() {
+    if (_fingers > 0) _fingers--;
+    final held = _heldUnderFinger;
+    if (_fingers > 0 || held == null) return;
+    _heldUnderFinger = null;
+    final landed = _landedUnderFinger;
+    _landedUnderFinger = false;
+    if (!_scroll.hasClients) return;
+    if (_scroll.offset - held <= _near) {
+      _toLatest();
+      return;
     }
+    if (_shift != 0) {
+      _glideScrolls = false;
+      _glide.animateWith(SpringSimulation(_spring, _shift, 0, 0, tolerance: _tolerance));
+    }
+    if (landed) setState(() => _unseen++);
   }
 
   /// Once the new rows are laid out: down to the latest (the list is
@@ -937,7 +986,16 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
     return Stack(
       children: [
         // Its own layer: the glide repaints the thread, not the header and composer.
-        Positioned.fill(child: RepaintBoundary(child: Listener(onPointerDown: _fingerDown, child: _Shifted(thread: this, child: _Now(clock: _now, child: list))))),
+        Positioned.fill(
+          child: RepaintBoundary(
+            child: Listener(
+              onPointerDown: _fingerDown,
+              onPointerUp: (_) => _fingerUp(),
+              onPointerCancel: (_) => _fingerUp(),
+              child: _Shifted(thread: this, child: _Now(clock: _now, child: list)),
+            ),
+          ),
+        ),
         // It fades in and out over 200 ms rather than blink.
         Positioned(
           left: 0,
@@ -1625,7 +1683,7 @@ class _BubbleBox extends StatelessWidget {
 /// never flickers and the line under it fades from one to the next. The
 /// bubble is whole at once: never dimmed while it goes.
 class _MineRow extends StatelessWidget {
-  const _MineRow({this.message, this.out, this.pos = _Pos.single, this.first = false, this.status = false, this.seenAt, this.live = false})
+  const _MineRow({this.message, this.out, this.pos = _Pos.single, this.first = false, this.status = false, this.seenAt, this.answered = false, this.live = false})
       : assert((message == null) != (out == null));
 
   /// The server's copy, once there is one.
@@ -1643,6 +1701,9 @@ class _MineRow extends StatelessWidget {
 
   /// When the team last read the conversation, in a past one.
   final DateTime? seenAt;
+
+  /// A teammate has written since: it was seen.
+  final bool answered;
 
   /// In the live conversation: "Seen" follows the controller's
   /// [MessengerController.agentSeenAt] itself.
@@ -1664,7 +1725,7 @@ class _MineRow extends StatelessWidget {
     String? reason;
     if (m != null) {
       bubble = _Bubble(message: m, pos: pos);
-      bool seenBy(DateTime? at) => at != null && !m.createdAt.isAfter(at);
+      bool seenBy(DateTime? at) => answered || at != null && !m.createdAt.isAfter(at);
       Widget said(bool seen) => _Ago(key: const ValueKey<String>('sent'), prefix: seen ? 'Seen · ' : 'Not seen yet · ', at: m.createdAt, style: _smallPrint);
       // A seen receipt redraws the line, not the row.
       if (status) line = live ? MessengerSelector<bool>(key: const ValueKey<String>('sent'), select: (c) => seenBy(c.agentSeenAt), builder: (_, seen) => said(seen)) : said(seenBy(seenAt));
@@ -1727,22 +1788,28 @@ class _MineRow extends StatelessWidget {
           // "Sending…" to "Seen": nothing below moves as it changes. Not
           // sized to its words as they change, which cut the new words
           // (":54 PM") while the width eased; the old fade out over the new
-          // as wide as the wider of the two, right-aligned.
-          if (said != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4, right: 2),
-              child: Stack(
-                alignment: Alignment.centerRight,
-                children: [
-                  const _StatusLineHeight(),
-                  AnimatedSwitcher(
-                    duration: fade,
-                    layoutBuilder: (current, previous) => Stack(alignment: Alignment.centerRight, children: [...previous, if (current != null) current]),
-                    child: said,
+          // as wide as the wider of the two, right-aligned. When a newer
+          // message takes it, it closes over 200 ms rather than drop the
+          // bubble above it by its height in one frame.
+          Reveal(
+            shown: said != null,
+            child: said == null
+                ? const SizedBox.shrink()
+                : Padding(
+                    padding: const EdgeInsets.only(top: 4, right: 2),
+                    child: Stack(
+                      alignment: Alignment.centerRight,
+                      children: [
+                        const _StatusLineHeight(),
+                        AnimatedSwitcher(
+                          duration: fade,
+                          layoutBuilder: (current, previous) => Stack(alignment: Alignment.centerRight, children: [...previous, if (current != null) current]),
+                          child: said,
+                        ),
+                      ],
+                    ),
                   ),
-                ],
-              ),
-            ),
+          ),
         ],
       ),
     );
@@ -1980,7 +2047,9 @@ class _AttachmentView extends StatelessWidget {
   Widget build(BuildContext context) {
     final a = attachment;
     final uploadId = a.uploadId;
-    final size = a.width != null && a.height != null ? Size(a.width!.toDouble(), a.height!.toDouble()) : null;
+    // The customer's own photos keep the 4:3 box they were drawn in on their
+    // way, so the server's copy taking the row never changes its shape.
+    final size = !mine && a.width != null && a.height != null ? Size(a.width!.toDouble(), a.height!.toDouble()) : null;
     if (a.isImage && uploadId != null) {
       final lookup = context.messenger.fileBytes(uploadId);
       return FutureBuilder<Uint8List>(

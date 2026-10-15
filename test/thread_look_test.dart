@@ -88,6 +88,7 @@ void main() {
     expect(lines, findsOneWidget, reason: 'one line, for the last');
     expect(tester.widget<Text>(lines).data, 'Not seen yet · Just now');
     expect(tester.getRect(lines).top, greaterThan(bubbleRect(tester, 'two weeks').bottom), reason: 'under the last');
+    expect(tester.getRect(lines).right, closeTo(bubbleRect(tester, 'two weeks').right - 2, 1), reason: 'at its right edge');
 
     channel.server('conversation:seen', <String, dynamic>{'conversationId': 'conv-1', 'seenBy': 'agent', 'seenAt': now()});
     await frames(tester, 15);
@@ -103,6 +104,16 @@ void main() {
     });
     expect(ticks['ValueListenableBuilder<DateTime>'], greaterThanOrEqualTo(4), reason: 'told the time four times a minute: $ticks');
     expect(ticks.of(<String>{'_MineRow', '_TeamRow', '_Bubble'}), 0, reason: 'and nothing else is built for it');
+  });
+
+  testWidgets('a teammate who has answered has seen it, whatever the seen receipts say', (tester) async {
+    final server = threadServer();
+    server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
+      msg('m1', 'visitor', 'My card has not arrived.', at: ago(9)),
+      msg('m2', 'agent', 'Let me check.', at: ago(8)),
+    ]);
+    await openThread(tester, server);
+    expect(find.descendant(of: threadList(), matching: find.text('Seen · 9m')), findsOneWidget);
   });
 
   testWidgets('a message on its way says "Sending…" only after 600 ms; refused, "Failed to send · Retry", and Retry sends it', (tester) async {
