@@ -136,8 +136,8 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
     });
   late final Animation<double> _goes = ReverseAnimation(CurvedAnimation(parent: _t, curve: const Interval(0, _TabStack.out)));
   late final Animation<double> _comes = CurvedAnimation(parent: _t, curve: const Interval(_TabStack.out, 1));
-  late final Animation<double> _scale = Tween<double>(begin: _TabStack.grow, end: 1)
-      .animate(CurvedAnimation(parent: _t, curve: const Interval(_TabStack.out, 1, curve: Curves.easeOutCubic)));
+  late final Animation<double> _scale =
+      Tween<double>(begin: _TabStack.grow, end: 1).animate(CurvedAnimation(parent: _t, curve: const Interval(_TabStack.out, 1, curve: Curves.easeOutCubic)));
 
   /// The tab going, while it fades out.
   int? _leaving;
@@ -319,63 +319,72 @@ class HomeSkeleton extends StatelessWidget {
     final name = c.lookName;
     final known = look != null || (name ?? '').trim().isNotEmpty;
     final subtitle = (look?.subtitle ?? '').trim();
-    return Semantics(
-      label: 'Connecting to support…',
-      child: Shimmer(
-        child: _Band(
-          child: ListView(
-            primary: false,
-            physics: const NeverScrollableScrollPhysics(),
-            padding: _homePadding,
-            children: [
-              Row(
-                children: [
-                  _Logo(url: look?.logoUrl, label: look?.productLabel ?? ''),
-                  const Spacer(),
-                  if (look != null) TeamFaces(size: 40, team: look.team),
-                  const SizedBox(width: 8),
-                  RoundIconButton(icon: Icons.close, tooltip: 'Close', light: true, onTap: () => closeMessenger(context)),
-                ],
-              ),
-              const SizedBox(height: 34),
-              if (known)
-                Text(greeting(name: name, chatbotGreeting: look?.greeting), style: _greetingStyle)
-              else
-                const TextBar(style: _greetingStyle, width: 190, onBrand: true),
-              if (subtitle.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Text(subtitle, style: _subtitleStyle),
+    return Shimmer(
+      child: _Band(
+        child: ListView(
+          primary: false,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: _homePadding,
+          children: [
+            Row(
+              children: [
+                _Logo(url: look?.logoUrl, label: look?.productLabel ?? ''),
+                const Spacer(),
+                if (look != null) TeamFaces(size: 40, team: look.team),
+                const SizedBox(width: 8),
+                RoundIconButton(icon: Icons.close, tooltip: 'Close', light: true, onTap: () => closeMessenger(context)),
               ],
-              const SizedBox(height: 26),
-              const MessengerCard(
-                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-                child: Row(
+            ),
+            const SizedBox(height: 34),
+            if (known)
+              Text(greeting(name: name, chatbotGreeting: look?.greeting), style: _greetingStyle)
+            else
+              const TextBar(style: _greetingStyle, width: 190, onBrand: true),
+            if (subtitle.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(subtitle, style: _subtitleStyle),
+            ],
+            const SizedBox(height: 26),
+            // What a screen reader hears for the cards still to come.
+            Semantics(
+              container: true,
+              label: 'Connecting to support…',
+              child: const ExcludeSemantics(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    MessengerCard(
+                      padding: EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                      child: Row(
                         children: [
-                          TextBar(style: _sendTitleStyle, width: 150),
-                          SizedBox(height: 3),
-                          Row(
-                            children: [
-                              StatusDot(away: true, size: 7),
-                              SizedBox(width: 6),
-                              TextBar(style: _statusStyle, width: 180),
-                            ],
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                TextBar(style: _sendTitleStyle, width: 150),
+                                SizedBox(height: 3),
+                                Row(
+                                  children: [
+                                    StatusDot(away: true, size: 7),
+                                    SizedBox(width: 6),
+                                    TextBar(style: _statusStyle, width: 180),
+                                  ],
+                                ),
+                              ],
+                            ),
                           ),
+                          SizedBox(width: 12),
+                          SkeletonBar(width: 22, height: 22),
                         ],
                       ),
                     ),
-                    SizedBox(width: 12),
-                    SkeletonBar(width: 22, height: 22),
+                    SizedBox(height: 14),
+                    _HomeHelpCard(onSearch: null),
                   ],
                 ),
               ),
-              const SizedBox(height: 14),
-              const _HomeHelpCard(onSearch: null),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -845,6 +854,9 @@ class MessagesTab extends StatelessWidget {
         color: brand.primary,
         onRefresh: c.refreshConversations,
         child: ListView.separated(
+          // Its own scrolling, not the sheet's: pulled down at the top it
+          // refreshes, as it always has, rather than move the sheet.
+          primary: false,
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: const EdgeInsets.only(bottom: 96),
           itemCount: c.conversations.length,
