@@ -1258,25 +1258,34 @@ class _Bubble extends StatelessWidget {
     final meta = m.meta;
     final bot = m.authorType == 'bot';
     final fg = mine ? brand.onPrimary : Palette.text;
-    final children = <Widget>[
-      if (bot && meta?.imageUrl != null) Padding(padding: const EdgeInsets.only(bottom: 8), child: _BotImage(url: meta!.imageUrl!)),
-      for (final a in m.attachments) Padding(padding: const EdgeInsets.only(bottom: 6), child: _AttachmentView(attachment: a, mine: mine)),
-      if (text.isNotEmpty) _RichText(text, color: fg, linkColor: mine ? fg : brand.primary),
+    // A photo alone is the bubble, edge to edge: no band of colour under it.
+    final onlyMedia = text.isEmpty && m.attachments.isNotEmpty && m.attachments.every((a) => a.isImage);
+    // Each part, and the room above it: none above the first, so nothing
+    // trails under the last.
+    final parts = <(double, Widget)>[
+      if (bot && meta?.imageUrl != null) (8, _BotImage(url: meta!.imageUrl!)),
+      for (final a in m.attachments) (6, _AttachmentView(attachment: a, mine: mine, framed: !onlyMedia)),
+      if (text.isNotEmpty) (6, _RichText(text, color: fg, linkColor: mine ? fg : brand.primary)),
       if (bot && meta?.articleSlug != null && context.messenger.session?.helpBaseUrl != null)
-        _InBubbleCard(
+        (8, _InBubbleCard(
           icon: Icons.description_outlined,
           title: meta!.articleTitle ?? 'Help article',
           hint: 'Read article',
           onTap: () => openArticle(context, meta.articleSlug!, title: meta.articleTitle ?? 'Help article'),
-        ),
+        )),
       if (bot && meta?.fileUrl != null)
-        _InBubbleCard(
+        (8, _InBubbleCard(
           icon: Icons.attach_file,
           title: meta!.fileName ?? 'File',
           onTap: () => openExternal(context, Uri.parse(meta.fileUrl!)),
-        ),
+        )),
     ];
-    final onlyMedia = text.isEmpty && m.attachments.isNotEmpty && m.attachments.every((a) => a.isImage);
+    final children = <Widget>[
+      for (var i = 0; i < parts.length; i++) ...[
+        if (i > 0) SizedBox(height: parts[i].$1),
+        parts[i].$2,
+      ],
+    ];
     final bubble = _BubbleBox(mine: mine, tight: onlyMedia, children: children);
     final copied = GestureDetector(
       onLongPress: text.isEmpty
@@ -1296,8 +1305,8 @@ class _Bubble extends StatelessWidget {
 }
 
 /// A bubble's shape and colour: the brand colour on the right for the
-/// customer, grey on the left for everyone else. [tight]: a photo alone,
-/// with only a thin edge of the bubble around it.
+/// customer, grey on the left for everyone else. [tight]: photos alone,
+/// edge to edge, cut to the bubble's corners.
 class _BubbleBox extends StatelessWidget {
   const _BubbleBox({required this.mine, required this.children, this.tight = false});
   final bool mine;
@@ -1309,7 +1318,8 @@ class _BubbleBox extends StatelessWidget {
     final brand = context.brand;
     return Container(
       constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.78),
-      padding: tight ? const EdgeInsets.all(3) : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: tight ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      clipBehavior: tight ? Clip.antiAlias : Clip.none,
       decoration: BoxDecoration(
         color: mine ? brand.primary : Palette.agentBubble,
         borderRadius: BorderRadius.only(
@@ -1382,7 +1392,9 @@ class _MineRow extends StatelessWidget {
           mine: true,
           tight: image != null && o.text.isEmpty,
           children: [
-            if (image != null) _Photo(image: MemoryImage(image)),
+            // Kept: the photo is the same picture under the server's copy.
+            if (image != null) _Photo(image: _memory(image), framed: o.text.isNotEmpty),
+            if (image != null && o.text.isNotEmpty) const SizedBox(height: 6),
             if (o.text.isNotEmpty) Text(o.text, style: TextStyle(fontSize: 15, height: 1.45, color: brand.onPrimary)),
           ],
         ),
@@ -1549,20 +1561,30 @@ class _InBubbleCard extends StatelessWidget {
 
 /// The bytes behind each photo lookup once they are known, held only as long
 /// as the lookup itself (the controller's): a row built again shows its
-/// photo at once, never a spinner first.
+/// photo at once, never an empty box first.
 final _photoBytes = Expando<Uint8List>('photo bytes');
+
+/// One picture for each photo's bytes, so the one shown while it was on its
+/// way and the server's copy share the image Flutter has already decoded.
+final _memoryImages = Expando<MemoryImage>('photo image');
+
+MemoryImage _memory(Uint8List bytes) => _memoryImages[bytes] ??= MemoryImage(bytes);
 
 /// A photo or file on a message. The customer's own photos are read with
 /// their token (they have no public address); https files open outside.
+/// [framed]: inside a bubble with words, rounded on its own; alone, the
+/// bubble is cut to it.
 class _AttachmentView extends StatelessWidget {
-  const _AttachmentView({required this.attachment, required this.mine});
+  const _AttachmentView({required this.attachment, required this.mine, this.framed = true});
   final Attachment attachment;
   final bool mine;
+  final bool framed;
 
   @override
   Widget build(BuildContext context) {
     final a = attachment;
     final uploadId = a.uploadId;
+    final size = a.width != null && a.height != null ? Size(a.width!.toDouble(), a.height!.toDouble()) : null;
     if (a.isImage && uploadId != null) {
       final lookup = context.messenger.fileBytes(uploadId);
       return FutureBuilder<Uint8List>(
@@ -1572,14 +1594,15 @@ class _AttachmentView extends StatelessWidget {
           final bytes = snap.data;
           if (bytes != null && bytes.isNotEmpty) {
             _photoBytes[lookup] = bytes;
-            return _Photo(image: MemoryImage(bytes));
+            return _Photo(image: _memory(bytes), size: size, framed: framed);
           }
           if (snap.hasError) return _FileChip(name: a.name, mine: mine);
-          return const SizedBox(width: 200, height: 150, child: Center(child: CircularProgressIndicator(strokeWidth: 2)));
+          // Its box, grey, while the bytes come: the same box the photo fills.
+          return _Photo(size: size, framed: framed);
         },
       );
     }
-    if (a.isImage && a.url.startsWith('https://')) return _Photo(image: NetworkImage(a.url));
+    if (a.isImage && a.url.startsWith('https://')) return _Photo(image: NetworkImage(a.url), size: size, framed: framed);
     return _FileChip(
       name: a.name,
       mine: mine,
@@ -1588,36 +1611,67 @@ class _AttachmentView extends StatelessWidget {
   }
 }
 
+/// A photo in the thread: one box from the start, whatever the photo — its
+/// own shape when the server says it, else 4:3 — grey until the picture has
+/// loaded, which then fades in over it in 150 ms. Nothing around it moves
+/// when it does. Decoded at the size it is drawn; the whole picture only in
+/// the viewer a tap opens.
 class _Photo extends StatelessWidget {
-  const _Photo({required this.image});
-  final ImageProvider image;
+  const _Photo({this.image, this.size, this.framed = true});
+
+  /// Null while its bytes are on their way: the box alone.
+  final ImageProvider? image;
+
+  /// The photo's size in pixels, when known before it loads.
+  final Size? size;
+
+  /// Rounded on its own (beside words); without, the bubble around it is.
+  final bool framed;
+
+  static const width = 240.0;
+  static const radius = 16.0;
+  static const fade = Duration(milliseconds: 150);
+
+  /// Its shape: the photo's own, kept between a tall 3:4 and a wide 2:1.
+  double get _aspect {
+    final s = size;
+    if (s == null || s.width <= 0 || s.height <= 0) return 4 / 3;
+    return (s.width / s.height).clamp(0.75, 2.0);
+  }
+
+  void _view(BuildContext context, ImageProvider image) {
+    final scope = context.getInheritedWidgetOfExactType<MessengerScope>();
+    showDialog<void>(
+      context: context,
+      // Named as the messenger's: closed with it, and with a sign-out.
+      routeSettings: const RouteSettings(name: '$messengerRoutePrefix/photo'),
+      builder: (_) {
+        final viewer = GestureDetector(
+          onTap: () => Navigator.of(context).pop(),
+          child: InteractiveViewer(child: Image(image: image)),
+        );
+        return scope == null ? viewer : _GoneOnReset(controller: scope.controller, child: viewer);
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: () {
-        final scope = context.getInheritedWidgetOfExactType<MessengerScope>();
-        showDialog<void>(
-          context: context,
-          // Named as the messenger's: closed with it, and with a sign-out.
-          routeSettings: const RouteSettings(name: '$messengerRoutePrefix/photo'),
-          builder: (_) {
-            final viewer = GestureDetector(
-              onTap: () => Navigator.of(context).pop(),
-              child: InteractiveViewer(child: Image(image: image)),
-            );
-            return scope == null ? viewer : _GoneOnReset(controller: scope.controller, child: viewer);
-          },
-        );
-      },
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(15),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 260, minWidth: 120),
-          child: Image(image: image, fit: BoxFit.cover, frameBuilder: fadeIn()),
-        ),
+    final image = this.image;
+    // Decoded to the box's width in the phone's pixels, not the photo's
+    // own (up to 2048 wide): less to decode, and to hold.
+    final pixels = (width * MediaQuery.devicePixelRatioOf(context)).round();
+    Widget box = SizedBox(
+      width: width,
+      height: (width / _aspect).roundToDouble(),
+      child: ColoredBox(
+        color: Palette.fill,
+        child: image == null ? null : Image(image: ResizeImage(image, width: pixels), fit: BoxFit.cover, frameBuilder: fadeIn(fade), gaplessPlayback: true),
       ),
     );
+    if (framed) box = ClipRRect(borderRadius: BorderRadius.circular(radius), child: box);
+    if (image == null) return box;
+    return GestureDetector(onTap: () => _view(context, image), child: box);
   }
 }
 

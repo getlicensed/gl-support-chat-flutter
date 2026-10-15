@@ -240,12 +240,17 @@ class MessageMeta {
 /// A file on a message: the customer's own upload (`upload://<id>`, read with
 /// their token) or a plain https link.
 class Attachment {
-  const Attachment({required this.name, required this.url, required this.contentType, this.bytes = 0});
+  const Attachment({required this.name, required this.url, required this.contentType, this.bytes = 0, this.width, this.height});
 
   final String name;
   final String url;
   final String contentType;
   final int bytes;
+
+  /// A photo's size in pixels, when the server says it: the thread gives it
+  /// that shape before it has loaded, rather than 4:3.
+  final int? width;
+  final int? height;
 
   bool get isImage => contentType.startsWith('image/');
 
@@ -260,6 +265,8 @@ class Attachment {
         url: _text(j['url']),
         contentType: _str(j['contentType']) ?? 'application/octet-stream',
         bytes: _int(j['bytes']),
+        width: _int(j['width']) > 0 ? _int(j['width']) : null,
+        height: _int(j['height']) > 0 ? _int(j['height']) : null,
       );
 }
 

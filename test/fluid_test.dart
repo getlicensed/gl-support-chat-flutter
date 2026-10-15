@@ -865,7 +865,7 @@ void main() {
       await settle(tester);
       await tester.tap(find.text('Send us a message'));
       await settle(tester);
-      final image = find.byWidgetPredicate((w) => w is Image && w.image is MemoryImage);
+      final image = find.byWidgetPredicate((w) => w is Image && _memory(w.image));
       expect(image, findsOneWidget);
       tester.widget<GestureDetector>(find.ancestor(of: image, matching: find.byType(GestureDetector)).first).onTap!();
       await settle(tester);
@@ -891,7 +891,7 @@ void main() {
       await settle(tester);
       await tester.tap(find.text('Send us a message'));
       await settle(tester);
-      final image = find.byWidgetPredicate((w) => w is Image && w.image is MemoryImage);
+      final image = find.byWidgetPredicate((w) => w is Image && _memory(w.image));
       tester.widget<GestureDetector>(find.ancestor(of: image, matching: find.byType(GestureDetector)).first).onTap!();
       await settle(tester);
       expect(find.byType(InteractiveViewer), findsOneWidget);
@@ -981,3 +981,6 @@ const _png = <int>[
   0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
   0x42, 0x60, 0x82,
 ];
+
+/// A photo from bytes held here — drawn at its size in the thread (0.4.8).
+bool _memory(ImageProvider image) => image is MemoryImage || (image is ResizeImage && image.imageProvider is MemoryImage);

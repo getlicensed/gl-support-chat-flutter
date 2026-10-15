@@ -273,7 +273,7 @@ void main() {
       expect(row, findsWidgets);
       expect(find.byKey(const ValueKey<String>('msg:photo-1')), findsNothing);
       expect(find.descendant(of: threadList(), matching: find.byType(CircularProgressIndicator)), findsNothing);
-      expect(find.descendant(of: threadList(), matching: find.byWidgetPredicate((w) => w is Image && w.image is MemoryImage)), findsOneWidget);
+      expect(find.descendant(of: threadList(), matching: find.byWidgetPredicate((w) => w is Image && _memory(w.image))), findsOneWidget);
     });
   });
 
@@ -778,3 +778,6 @@ const _png = <int>[
   0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
   0x42, 0x60, 0x82,
 ];
+
+/// A photo from bytes held here — drawn at its size in the thread (0.4.8).
+bool _memory(ImageProvider image) => image is MemoryImage || (image is ResizeImage && image.imageProvider is MemoryImage);

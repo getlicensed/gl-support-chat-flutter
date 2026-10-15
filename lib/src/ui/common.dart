@@ -618,13 +618,13 @@ ImageFrameBuilder fadeOver(Widget placeholder) => (context, child, frame, sync) 
     };
 
 /// A picture with nothing to stand for it (a logo, a photo): it fades in
-/// once it has loaded rather than pop in.
-ImageFrameBuilder fadeIn() => (context, child, frame, sync) {
+/// once it has loaded rather than pop in, over [time].
+ImageFrameBuilder fadeIn([Duration time = const Duration(milliseconds: 200)]) => (context, child, frame, sync) {
       if (sync) return child;
       return AnimatedOpacity(
         opacity: frame == null ? 0 : 1,
         // Even with less motion asked for: see [fullTime].
-        duration: fullTime(const Duration(milliseconds: 200)),
+        duration: fullTime(time),
         curve: Curves.easeOut,
         child: child,
       );
