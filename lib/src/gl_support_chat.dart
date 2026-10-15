@@ -8,6 +8,7 @@ import 'api/client.dart';
 import 'api/models.dart';
 import 'api/realtime.dart';
 import 'core/controller.dart';
+import 'core/look.dart';
 import 'core/session_store.dart';
 import 'device.dart';
 import 'fallback.dart';
@@ -19,7 +20,7 @@ import 'messenger_page.dart';
 /// a complaint you hear about.
 ///
 /// Events and their detail:
-/// - `messenger_ready`   `{ms}` — signed in and on screen, from opening the messenger (`cached: true` on a reopen, once it has refreshed)
+/// - `messenger_ready`   `{ms}` — signed in and on screen, from opening the messenger (`cached: true` when it opened on what it had — a reopen, or Home fetched ahead after [GLSupportChat.login] — once it has refreshed)
 /// - `messenger_failed`  `{reason, detail}` — `network` or `http_<status>`; the customer saw the fallback screen
 /// - `auth_failed`       `{status, detail, failures}` — the badge / push calls, not the messenger itself
 /// - `identity_rejected` `{code}` — the backend's signature was refused; the customer is anonymous until fixed
@@ -226,6 +227,11 @@ class GLSupportChat {
   static ({MessengerApi api, int generation, DateTime at, MessengerSession session})? _lastSignIn;
 
   static SessionStore _store = const PrefsSessionStore();
+
+  /// How each chatbot looked at its last sign-in, by product id: the
+  /// messenger's skeleton is drawn in it while it signs in. Read from the
+  /// store at [configure], written there when it changes.
+  static final Map<String, MessengerLook> _looks = <String, MessengerLook>{};
   static http.Client? _httpClient;
   static RealtimeFactory _realtime = socketIoChannel;
 
@@ -276,11 +282,21 @@ class GLSupportChat {
     WidgetsFlutterBinding.ensureInitialized();
     _lifecycle ??= _Lifecycle()..attach();
     _startPolling();
+    final product = productId.trim();
+    if (!_looks.containsKey(product)) {
+      unawaited(_store.look(product).then((j) {
+        final look = MessengerLook.fromJson(j);
+        if (look != null) _looks.putIfAbsent(product, () => look);
+      }).catchError((Object _) {}));
+    }
   }
 
   /// The user signed in: from now on the messenger and the badge are theirs.
   /// Registers the push token too, if one was given before. Their anonymous
-  /// chat on this phone, if any, becomes part of their history.
+  /// chat on this phone, if any, becomes part of their history. What Home
+  /// shows (their conversations, the top articles, the team's faces) is
+  /// fetched in the background, without going live, so [present] opens on
+  /// it at once.
   ///
   /// Every call sends the identity, and the server updates the customer's
   /// contact with it (name, email, phone, and the [GLSupportChatIdentity.extra]
@@ -306,6 +322,8 @@ class GLSupportChat {
     try {
       final session = await _authenticateInBackground();
       if (session == null) return false;
+      // Home's data, fetched now: the messenger opens on it at once.
+      _prefetchMessenger();
       final token = _pushToken;
       final platform = _pushPlatform;
       if (token != null && platform != null) await registerPushToken(token, platform: platform);
@@ -412,15 +430,7 @@ class GLSupportChat {
       _requests?.go(screen);
       return shown;
     }
-    MessengerController? controller;
-    if (api != null) {
-      controller = _controller;
-      if (controller == null || !identical(controller.api, api)) {
-        controller?.dispose();
-        controller = MessengerController(api: api, signIn: _messengerSignIn, realtimeFactory: _realtime, onDiagnostic: _diag, onUnreadChanged: _emitUnread);
-        _controller = controller;
-      }
-    }
+    final controller = api == null ? null : _messengerFor(api);
     String? browserUrl;
     if (api != null) {
       try {
@@ -447,6 +457,33 @@ class GLSupportChat {
       if (identical(_shown, closed.future)) _forgetShown();
       closed.complete();
     }
+  }
+
+  /// The messenger kept for the customer signed in now, made if there is
+  /// none (or it was made through an API since replaced), in the chatbot's
+  /// last look until it has signed in.
+  static MessengerController _messengerFor(MessengerApi api) {
+    var c = _controller;
+    if (c == null || !identical(c.api, api)) {
+      c?.dispose();
+      c = MessengerController(api: api, signIn: _messengerSignIn, realtimeFactory: _realtime, onDiagnostic: _diag, onUnreadChanged: _emitUnread);
+      _controller = c;
+    }
+    if (c.session == null) {
+      c.look = _looks[api.productId] ?? c.look;
+      final identity = _identity;
+      c.lookName = identity != null && identity.isVerified ? identity.name : null;
+    }
+    return c;
+  }
+
+  /// After a [login]: sign the messenger in and fetch what Home shows, in
+  /// the background and without going live, so [present] shows Home at
+  /// once. Not while it is on screen: it is live and keeps itself up to date.
+  static void _prefetchMessenger() {
+    final api = _api;
+    if (api == null || _identity == null || _onScreen()) return;
+    unawaited(_messengerFor(api).prefetch());
   }
 
   /// The messenger is up. A navigator can go without closing it (the app
@@ -490,6 +527,7 @@ class GLSupportChat {
     _forgetShown();
     _controller?.dispose();
     _controller = null;
+    _looks.clear();
     _authFailures = 0;
     _authPausedUntil = null;
   }
@@ -547,26 +585,33 @@ class GLSupportChat {
       return session;
     }
     if (session.visitorId.isNotEmpty && session.visitorId != stored) await _store.saveVisitorId(product, session.visitorId);
+    final look = MessengerLook.of(session);
+    if (!look.same(_looks[product])) {
+      _looks[product] = look;
+      unawaited(_store.saveLook(product, look.toJson()).catchError((Object _) {}));
+    }
     _authFailures = 0;
     _authPausedUntil = null;
     if (generation == _generation) _lastSignIn = (api: api, generation: generation, at: DateTime.now(), session: session);
     return session;
   }
 
-  /// The messenger's sign-in. Opened for the first time just after a
-  /// sign-in for the same customer worked — `login` before `present`, as the
-  /// README recommends — it takes that session rather than ask the server
-  /// again: a round trip less before Home shows. Only within a minute, as the
-  /// session carries the office hours; never on a reopen, which already
-  /// shows what it has and needs the server's fresh word (an email left
-  /// since, say); and never for a token the server refused, which
-  /// [_renewToken] renews through [_signIn].
+  /// The messenger's sign-in. Opened (or fetching ahead) for the first time
+  /// just after a sign-in for the same customer worked — `login` before
+  /// `present`, as the README recommends — it takes that session rather
+  /// than ask the server again: a round trip less before Home shows. Only
+  /// within a minute, as the session carries the office hours; never on a
+  /// reopen, which already shows what it has and needs the server's fresh
+  /// word (an email left since, say); and never for a token the server
+  /// refused, which [_renewToken] renews through [_signIn].
   static Future<MessengerSession> _messengerSignIn() {
     final last = _lastSignIn;
     final api = _api;
+    final c = _controller;
+    final fresh = c == null || c.session == null || (!c.wasOpened && identical(c.session, last?.session));
     if (last != null &&
         api != null &&
-        _controller?.session == null &&
+        fresh &&
         identical(last.api, api) &&
         last.generation == _generation &&
         api.token == last.session.token &&

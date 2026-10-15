@@ -325,13 +325,14 @@ void main() {
       expect(find.descendant(of: find.byType(HelpTab), matching: find.text('renew')), findsOneWidget, reason: 'the search typed is still there');
     });
 
-    testWidgets('Home fades in once when it arrives after the spinner; opened again, it is simply there', (tester) async {
+    testWidgets("the first open: Home's skeleton, then Home cross-fades in over it; opened again, Home at once", (tester) async {
       usePhone(tester, Phone.iphone13);
       server.hold(<String>['/widget/auth']);
       final c = controllerFor(server, channel);
       await tester.pumpWidget(MaterialApp(home: GLSupportChatPage(controller: c)));
       await tester.pump();
-      expect(find.text('Connecting to support…'), findsOneWidget);
+      expect(find.byType(HomeSkeleton), findsOneWidget);
+      expect(find.byTooltip('Close'), findsOneWidget, reason: 'always a way out');
       server.release();
       await tester.pump();
       await tester.pump();
@@ -343,17 +344,16 @@ void main() {
           .evaluate()
           .map((e) => (e.widget as FadeTransition).opacity.value)
           .reduce((a, b) => a * b);
-      final top = tester.getRect(greeting).top;
       expect(opacity(), inExclusiveRange(0, 1), reason: 'fading in');
-      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 500));
       expect(opacity(), 1);
-      expect(tester.getRect(greeting).top, top, reason: 'opacity only: nothing moves');
+      expect(find.byType(HomeSkeleton), findsNothing);
 
-      // Closed and opened again for the same customer: Home at once.
+      // Closed and opened again for the same customer: Home at once, no skeleton.
       await tester.pumpWidget(const SizedBox());
       await tester.pumpWidget(MaterialApp(home: GLSupportChatPage(controller: c)));
-      await tester.pump();
-      expect(opacity(), 1);
+      expect(find.byType(HomeSkeleton), findsNothing);
+      expect(greeting, findsOneWidget);
       await settle(tester);
       c.dispose();
     });

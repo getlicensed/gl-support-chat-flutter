@@ -7,6 +7,7 @@ import 'package:gl_support_chat/src/core/controller.dart';
 import 'package:gl_support_chat/src/core/format.dart';
 import 'package:gl_support_chat/src/core/session_store.dart';
 import 'package:gl_support_chat/src/messenger_page.dart';
+import 'package:gl_support_chat/src/ui/tabs.dart';
 import 'package:gl_support_chat/src/ui/conversation.dart';
 
 import 'support/fakes.dart';
@@ -86,7 +87,7 @@ void main() {
       }
 
       await open(const Size(390, 844));
-      expect(find.text('Connecting to support…'), findsOneWidget, reason: 'the very first open has nothing to show yet');
+      expect(find.byType(HomeSkeleton), findsOneWidget, reason: 'the very first open has nothing to show yet');
       await settle(tester);
       for (final (size, scale, theme) in <(Size, double, ThemeData?)>[
         (const Size(390, 844), 1.0, null),
@@ -96,7 +97,7 @@ void main() {
         await tester.pumpWidget(const SizedBox()); // closed
         server.hold(GatedServer.opening);
         await open(size, scale: scale, theme: theme);
-        expect(find.text('Connecting to support…'), findsNothing, reason: '$size ×$scale: no spinner');
+        expect(find.byType(HomeSkeleton), findsNothing, reason: '$size ×$scale: no spinner');
         expect(find.text('It is in the post today.'), findsOneWidget, reason: '$size ×$scale: the recent message, from what it had');
         server.release();
         await settle(tester);
@@ -546,7 +547,7 @@ void main() {
       unawaited(GLSupportChat.present(host));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 350));
-      expect(find.text('Connecting to support…'), findsNothing);
+      expect(find.byType(HomeSkeleton), findsNothing);
       expect(find.text('It is in the post today.'), findsOneWidget);
       expect(server.finished.length, answered, reason: 'before any request has completed');
       expect(kept.draft, 'My licence number is');
@@ -567,7 +568,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 350));
       expect(find.text('It is in the post today.'), findsNothing, reason: 'nothing of the customer before');
-      expect(find.text('Connecting to support…'), findsOneWidget);
+      expect(find.byType(HomeSkeleton), findsOneWidget);
       expect(GLSupportChat.debugMessenger!.draft, isEmpty);
       server.release();
       await settle(tester);
@@ -600,7 +601,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('Where is my certificate?', skipOffstage: false), findsNothing);
-      expect(find.text('Connecting to support…'), findsOneWidget);
+      expect(find.byType(HomeSkeleton), findsOneWidget);
       await out;
       server.release();
       await settle(tester);
@@ -688,7 +689,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 350));
       expect(GLSupportChat.debugMessenger!.viewingLive, isFalse, reason: 'what it had says nothing is unread');
-      expect(find.text('Connecting to support…'), findsNothing);
+      expect(find.byType(HomeSkeleton), findsNothing);
       server.release();
       await settle(tester);
       expect(await relogin, isTrue);
@@ -702,7 +703,7 @@ void main() {
       server.hold(<String>['/widget/auth']);
       unawaited(GLSupportChat.present(host));
       await settle(tester);
-      expect(find.text('Connecting to support…'), findsOneWidget);
+      expect(find.byType(HomeSkeleton), findsOneWidget);
 
       unawaited(GLSupportChat.present(host, screen: GLSupportChatScreen.messages));
       await tester.pump();

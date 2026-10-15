@@ -7,10 +7,14 @@ import 'dart:ui' show Color;
 import '../api/models.dart';
 
 /// `Hi Ayesha 👋` for a signed-in customer, the chatbot's own greeting, else `Hi there 👋`.
-String greetingFor(MessengerSession s) {
-  final first = (s.identifiedName ?? '').trim().split(RegExp(r'\s+')).first;
+String greetingFor(MessengerSession s) => greeting(name: s.identifiedName, chatbotGreeting: s.welcomeGreeting);
+
+/// The rule of [greetingFor], from its parts: also what Home's skeleton
+/// says, from the look remembered and the name the app signed in with.
+String greeting({String? name, String? chatbotGreeting}) {
+  final first = (name ?? '').trim().split(RegExp(r'\s+')).first;
   if (first.isNotEmpty) return 'Hi $first 👋';
-  final custom = (s.welcomeGreeting ?? '').trim();
+  final custom = (chatbotGreeting ?? '').trim();
   return custom.isNotEmpty ? custom : 'Hi there 👋';
 }
 

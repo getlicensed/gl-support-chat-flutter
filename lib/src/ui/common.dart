@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../api/models.dart';
 import '../core/controller.dart';
 import '../core/format.dart';
 import '../fallback.dart';
@@ -243,7 +244,7 @@ class PersonAvatar extends StatelessWidget {
         fit: BoxFit.cover,
         // A 404 (no photo) or no signal: the initial, never a broken image.
         errorBuilder: (_, __, ___) => fallback,
-        frameBuilder: (_, child, frame, sync) => frame == null && !sync ? fallback : child,
+        frameBuilder: fadeOver(fallback),
       ),
     );
   }
@@ -281,7 +282,7 @@ class LogoAvatar extends StatelessWidget {
                 fit: BoxFit.contain,
                 // Already on the brand colour: the letter alone, never a broken image.
                 errorBuilder: (_, __, ___) => Center(child: InitialAvatar.letter(brand, label, size)),
-                frameBuilder: (_, child, frame, sync) => frame == null && !sync ? Center(child: InitialAvatar.letter(brand, label, size)) : child,
+                frameBuilder: fadeOver(Center(child: InitialAvatar.letter(brand, label, size))),
               ),
             ),
     );
@@ -294,22 +295,24 @@ class LogoAvatar extends StatelessWidget {
         height: size,
         fit: BoxFit.cover,
         errorBuilder: (_, __, ___) => onBrand,
-        frameBuilder: (_, child, frame, sync) => frame == null && !sync ? onBrand : child,
+        frameBuilder: fadeOver(onBrand),
       ),
     );
   }
 }
 
-/// Up to three team faces, overlapping, as on Home and in the chat header.
+/// Up to three team faces, overlapping, as on Home and in the chat header:
+/// the session's, or [team] (the look remembered from last time).
 class TeamFaces extends StatelessWidget {
-  const TeamFaces({super.key, this.size = 40, this.border = 2});
+  const TeamFaces({super.key, this.size = 40, this.border = 2, this.team});
 
   final double size;
   final double border;
+  final List<TeamFace>? team;
 
   @override
   Widget build(BuildContext context) {
-    final team = context.messenger.session?.team ?? const [];
+    final team = this.team ?? context.messenger.session?.team ?? const <TeamFace>[];
     if (team.isEmpty) return const SizedBox.shrink();
     final step = size - size / 4;
     return SizedBox(
@@ -427,6 +430,140 @@ class MessengerCard extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: onTap == null ? Padding(padding: padding, child: child) : InkWell(onTap: onTap, child: Padding(padding: padding, child: child)),
       ),
+    );
+  }
+}
+
+/// A picture that comes in over what stood for it (an initial, a letter):
+/// a 200 ms fade, never a one-frame swap. One already in the cache (fetched
+/// at sign-in) is simply there.
+ImageFrameBuilder fadeOver(Widget placeholder) => (context, child, frame, sync) {
+      if (sync) return child;
+      return Stack(
+        alignment: Alignment.center,
+        children: [
+          placeholder,
+          AnimatedOpacity(
+            opacity: frame == null ? 0 : 1,
+            duration: MediaQuery.maybeDisableAnimationsOf(context) ?? false ? Duration.zero : const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            child: child,
+          ),
+        ],
+      );
+    };
+
+/// A picture with nothing to stand for it (a logo, a photo): it fades in
+/// once it has loaded rather than pop in.
+ImageFrameBuilder fadeIn() => (context, child, frame, sync) {
+      if (sync) return child;
+      return AnimatedOpacity(
+        opacity: frame == null ? 0 : 1,
+        duration: MediaQuery.maybeDisableAnimationsOf(context) ?? false ? Duration.zero : const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        child: child,
+      );
+    };
+
+/// Skeleton bars below this shimmer together: a soft highlight that sweeps
+/// across every 1200 ms. Still for a phone that asks for less motion.
+class Shimmer extends StatefulWidget {
+  const Shimmer({super.key, required this.child});
+  final Widget child;
+
+  static const period = Duration(milliseconds: 1200);
+
+  @override
+  State<Shimmer> createState() => _ShimmerState();
+}
+
+class _ShimmerState extends State<Shimmer> with SingleTickerProviderStateMixin {
+  late final AnimationController _sweep = AnimationController(vsync: this, duration: Shimmer.period);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _sweep.stop();
+      _sweep.value = 0;
+    } else if (!_sweep.isAnimating) {
+      _sweep.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _sweep.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => _ShimmerScope(sweep: _sweep, child: widget.child);
+}
+
+class _ShimmerScope extends InheritedWidget {
+  const _ShimmerScope({required this.sweep, required super.child});
+  final Animation<double> sweep;
+
+  @override
+  bool updateShouldNotify(_ShimmerScope old) => !identical(old.sweep, sweep);
+}
+
+/// A rounded grey bar where words will be. On the brand colour ([onBrand])
+/// it is white, see-through.
+class SkeletonBar extends StatelessWidget {
+  const SkeletonBar({super.key, this.width, this.height = 12, this.onBrand = false});
+
+  final double? width;
+  final double height;
+  final bool onBrand;
+
+  @override
+  Widget build(BuildContext context) {
+    final base = onBrand ? const Color(0x38FFFFFF) : const Color(0xFFE8EAED);
+    final light = onBrand ? const Color(0x61FFFFFF) : const Color(0xFFF6F7F8);
+    final radius = BorderRadius.circular(height / 2);
+    final sweep = context.dependOnInheritedWidgetOfExactType<_ShimmerScope>()?.sweep;
+    if (sweep == null) return Container(width: width, height: height, decoration: BoxDecoration(color: base, borderRadius: radius));
+    return AnimatedBuilder(
+      animation: sweep,
+      builder: (_, __) {
+        // The highlight enters from the left edge and leaves past the right.
+        final at = -0.3 + 1.6 * sweep.value;
+        return Container(
+          width: width,
+          height: height,
+          decoration: BoxDecoration(
+            borderRadius: radius,
+            gradient: LinearGradient(
+              colors: [base, light, base],
+              stops: [(at - 0.3).clamp(0.0, 1.0), at.clamp(0.0, 1.0), (at + 0.3).clamp(0.0, 1.0)],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// A skeleton bar exactly one line of [style] tall, so what replaces it
+/// takes the same room at any text size.
+class TextBar extends StatelessWidget {
+  const TextBar({super.key, required this.style, required this.width, this.onBrand = false});
+
+  final TextStyle style;
+  final double width;
+  final bool onBrand;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = style.fontSize ?? 14;
+    return Stack(
+      alignment: Alignment.centerLeft,
+      children: [
+        ExcludeSemantics(child: Opacity(opacity: 0, child: Text('Hg', maxLines: 1, style: style))),
+        SkeletonBar(width: width, height: (MediaQuery.textScalerOf(context).scale(size) * 0.72).roundToDouble(), onBrand: onBrand),
+      ],
     );
   }
 }

@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
 import '../api/realtime.dart';
 import 'format.dart';
+import 'look.dart';
 
 typedef MessengerDiagnostics = void Function(String event, Map<String, Object?> detail);
 
@@ -99,6 +101,23 @@ class MessengerController extends ChangeNotifier {
   MessengerSession? session;
   BrandColors brand = BrandColors(null);
   String? visitorEmail;
+
+  /// How the chatbot looked last time, drawn while it signs in (Home's
+  /// skeleton). Until there is a session it gives the brand colour too.
+  MessengerLook? get look => _look;
+  MessengerLook? _look;
+  set look(MessengerLook? value) {
+    _look = value;
+    if (session == null && value != null) brand = BrandColors(value.brandColor);
+  }
+
+  /// The customer's first name as the app gave it in a signed identity, for
+  /// the skeleton's greeting; the server's word replaces it.
+  String? lookName;
+
+  /// A screen has shown this controller and closed: the next open is a
+  /// reopen.
+  bool wasOpened = false;
 
   /// True while the open conversation and the Messages list are being
   /// fetched. On a reopen the screens already show what was there; this says
@@ -214,6 +233,7 @@ class MessengerController extends ChangeNotifier {
   int _epoch = 0;
   Future<void>? _startRun;
   Future<void>? _loadRun;
+  Future<void>? _prefetchRun;
 
   /// The Messages list's part of the loads that are out: the first open
   /// shows Home once it is in.
@@ -251,6 +271,7 @@ class MessengerController extends ChangeNotifier {
   /// once the messages still waiting to go have gone — and everything shown
   /// is kept for the next open.
   void detach() {
+    wasOpened = true;
     if (_attached > 0) _attached--;
     if (_attached == 0) _suspend();
   }
@@ -282,6 +303,9 @@ class MessengerController extends ChangeNotifier {
   }
 
   Future<void> _start() async {
+    // Fetching ahead (see [prefetch]): its sign-in and list are this open's own.
+    final ahead = _prefetchRun;
+    if (ahead != null) await ahead;
     final epoch = _epoch;
     final cached = phase == MessengerPhase.ready;
     final opened = _now();
@@ -306,9 +330,7 @@ class MessengerController extends ChangeNotifier {
     try {
       final s = await signIn();
       if (epoch != _epoch) return;
-      session = s;
-      brand = BrandColors(s.brandColor);
-      visitorEmail = s.email;
+      _took(s);
     } catch (e) {
       if (epoch != _epoch) return;
       if (!cached) {
@@ -350,6 +372,55 @@ class MessengerController extends ChangeNotifier {
     if (cached) _diag('messenger_ready', <String, Object?>{'ms': _now().difference(opened).inMilliseconds, 'cached': true});
     _notify();
     if (_suspended) _closeWhenIdle();
+  }
+
+  /// Before the messenger is first opened (just after the app's `login`):
+  /// sign in and fetch what Home shows — the Messages list and the top
+  /// articles — without going live, so the open shows Home at once rather
+  /// than a skeleton. The open conversation waits for the open. Never
+  /// throws; one that fails leaves the open to sign in as it always did.
+  Future<void> prefetch() {
+    if (_disposed || _attached > 0 || _startRun != null || phase != MessengerPhase.loading) return Future<void>.value();
+    final running = _prefetchRun;
+    if (running != null) return running;
+    final run = _prefetch();
+    _prefetchRun = run;
+    return run.whenComplete(() {
+      if (identical(_prefetchRun, run)) _prefetchRun = null;
+    });
+  }
+
+  Future<void> _prefetch() async {
+    final epoch = _epoch;
+    try {
+      final s = await signIn();
+      if (epoch != _epoch || phase != MessengerPhase.loading) return;
+      _took(s);
+      unawaited(loadArticles());
+      await refreshConversations();
+      if (epoch != _epoch || phase != MessengerPhase.loading) return;
+      phase = MessengerPhase.ready;
+      _notify();
+    } catch (_) {
+      // the open signs in again, and shows why if it cannot
+    }
+  }
+
+  /// A sign-in came back: what it says is what Home shows. Its pictures are
+  /// fetched now, so Home draws them at once rather than popping them in.
+  void _took(MessengerSession s) {
+    session = s;
+    brand = BrandColors(s.brandColor);
+    visitorEmail = s.email;
+    final urls = <String>[
+      if (s.logoUrl != null) s.logoUrl!,
+      if (s.avatarUrl != null) s.avatarUrl!,
+      for (final t in s.team)
+        if ((t.avatarPath ?? '').isNotEmpty) '${api.apiUrl}${t.avatarPath}',
+    ];
+    for (final url in urls) {
+      precacheNetworkImage(url);
+    }
   }
 
   /// Fetch what changed — the open conversation and the Messages list — and
@@ -503,6 +574,7 @@ class MessengerController extends ChangeNotifier {
     _startRun = null;
     _loadRun = null;
     _listLoad = null;
+    _prefetchRun = null;
     _delivering = false;
     phase = MessengerPhase.loading;
     failure = null;
@@ -1583,5 +1655,22 @@ class MessengerController extends ChangeNotifier {
     _emailThanks?.cancel();
     _releaseWaiting();
     super.dispose();
+  }
+}
+
+/// Fetch a picture into Flutter's image cache, where `Image.network` finds
+/// it at once. Quietly: a picture that does not load is drawn as the
+/// initial it stands for. Nothing without a Flutter binding (a plain test).
+void precacheNetworkImage(String url) {
+  try {
+    final stream = NetworkImage(url).resolve(ImageConfiguration.empty);
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (_, __) => stream.removeListener(listener),
+      onError: (_, __) => stream.removeListener(listener),
+    );
+    stream.addListener(listener);
+  } catch (_) {
+    // no image cache here: the screens fetch it when they draw it
   }
 }

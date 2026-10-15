@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../api/models.dart';
+import '../core/controller.dart';
 import '../core/format.dart';
 import 'common.dart';
 import 'navigation.dart';
@@ -205,6 +206,8 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
 // Home
 // ==========================================================================
 
+/// Home: the skeleton while the messenger signs in for the first time,
+/// then Home itself, cross-faded over 200 ms.
 class HomeTab extends StatelessWidget {
   const HomeTab({super.key, required this.onSearch, required this.onMessages});
 
@@ -214,16 +217,30 @@ class HomeTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.messenger;
-    final s = c.session!;
-    final brand = c.brand;
-    final status = presenceLines(c.agentsOnline, s.officeHours);
-    final subtitle = (s.welcomeSubtitle ?? '').trim();
-    final recent = c.conversations.isEmpty ? null : c.conversations.first;
+    final ready = c.phase == MessengerPhase.ready && c.session != null;
+    return AnimatedSwitcher(
+      // A new one for each customer: after a sign-out the one before's Home
+      // goes at once, never faded out over the next one's skeleton.
+      key: ValueKey<int>(c.resets),
+      duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
+      layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
+      child: ready ? _Home(key: const ValueKey<String>('home'), onSearch: onSearch) : const HomeSkeleton(key: ValueKey<String>('skeleton')),
+    );
+  }
+}
+
+/// The brand band behind the top of Home, fading into the page.
+class _Band extends StatelessWidget {
+  const _Band({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final brand = context.brand;
     return ColoredBox(
       color: Palette.page,
       child: Stack(
         children: [
-          // The brand band behind the top of the page, fading into it.
           Container(
             height: 340,
             decoration: BoxDecoration(
@@ -250,15 +267,188 @@ class HomeTab extends StatelessWidget {
               ),
             ),
           ),
-          SafeArea(
-            bottom: false,
-            child: ListView(
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+          SafeArea(bottom: false, child: child),
+        ],
+      ),
+    );
+  }
+}
+
+const _homePadding = EdgeInsets.fromLTRB(20, 18, 20, 24);
+const _greetingStyle = TextStyle(fontSize: 29, height: 1.18, fontWeight: FontWeight.w700, color: Colors.white, letterSpacing: -0.4);
+const _subtitleStyle = TextStyle(fontSize: 15, height: 1.45, color: Color(0xEBFFFFFF));
+const _sendTitleStyle = TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Palette.text);
+const _statusStyle = TextStyle(fontSize: 14, color: Palette.muted);
+
+/// Home as it will be, before anything has come back: the brand band in the
+/// chatbot's colour (remembered from last time), its logo, team and
+/// greeting when known, and the cards at their final heights with
+/// shimmering bars where the words will be. Only Close works.
+class HomeSkeleton extends StatelessWidget {
+  const HomeSkeleton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.messenger;
+    final look = c.look;
+    final name = c.lookName;
+    final known = look != null || (name ?? '').trim().isNotEmpty;
+    final subtitle = (look?.subtitle ?? '').trim();
+    return Semantics(
+      label: 'Connecting to support…',
+      child: Shimmer(
+        child: _Band(
+          child: ListView(
+            primary: false,
+            physics: const NeverScrollableScrollPhysics(),
+            padding: _homePadding,
+            children: [
+              Row(
+                children: [
+                  _Logo(url: look?.logoUrl, label: look?.productLabel ?? ''),
+                  const Spacer(),
+                  if (look != null) TeamFaces(size: 40, team: look.team),
+                  const SizedBox(width: 8),
+                  RoundIconButton(icon: Icons.close, tooltip: 'Close', light: true, onTap: () => closeMessenger(context)),
+                ],
+              ),
+              const SizedBox(height: 34),
+              if (known)
+                Text(greeting(name: name, chatbotGreeting: look?.greeting), style: _greetingStyle)
+              else
+                const TextBar(style: _greetingStyle, width: 190, onBrand: true),
+              if (subtitle.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Text(subtitle, style: _subtitleStyle),
+              ],
+              const SizedBox(height: 26),
+              const MessengerCard(
+                padding: EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          TextBar(style: _sendTitleStyle, width: 150),
+                          SizedBox(height: 3),
+                          Row(
+                            children: [
+                              StatusDot(away: true, size: 7),
+                              SizedBox(width: 6),
+                              TextBar(style: _statusStyle, width: 180),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(width: 12),
+                    SkeletonBar(width: 22, height: 22),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              const _HomeHelpCard(onSearch: null),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Home. The first time it shows in an open messenger its parts come in
+/// one after another — the header, then each card 60 ms after the one
+/// before — each fading in as it rises 12 points, so it never lands all at
+/// once. Not for a phone that asks for less motion.
+class _Home extends StatefulWidget {
+  const _Home({super.key, required this.onSearch});
+  final VoidCallback onSearch;
+
+  /// When each part starts, and how long it takes.
+  static const step = Duration(milliseconds: 60);
+  static const each = Duration(milliseconds: 280);
+  static const rise = 12.0;
+
+  @override
+  State<_Home> createState() => _HomeState();
+}
+
+class _HomeState extends State<_Home> with SingleTickerProviderStateMixin {
+  static const _parts = 4;
+  late final AnimationController _in = AnimationController(
+    vsync: this,
+    duration: _Home.step * (_parts - 1) + _Home.each,
+  );
+  late final List<CurvedAnimation> _part = <CurvedAnimation>[
+    for (var i = 0; i < _parts; i++)
+      CurvedAnimation(
+        parent: _in,
+        curve: Interval(
+          (_Home.step * i).inMilliseconds / _in.duration!.inMilliseconds,
+          (_Home.step * i + _Home.each).inMilliseconds / _in.duration!.inMilliseconds,
+          curve: Curves.easeOutCubic,
+        ),
+      ),
+  ];
+  bool _started = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _in.value = 1;
+    } else {
+      _in.forward();
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final p in _part) {
+      p.dispose();
+    }
+    _in.dispose();
+    super.dispose();
+  }
+
+  Widget _stagger(int i, Widget child) {
+    final t = _part[i];
+    return FadeTransition(
+      opacity: t,
+      child: AnimatedBuilder(
+        animation: t,
+        child: child,
+        builder: (_, child) => Transform.translate(offset: Offset(0, _Home.rise * (1 - t.value)), child: child),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.messenger;
+    final s = c.session;
+    if (s == null) return const SizedBox.shrink();
+    final brand = c.brand;
+    final status = presenceLines(c.agentsOnline, s.officeHours);
+    final subtitle = (s.welcomeSubtitle ?? '').trim();
+    final recent = c.conversations.isEmpty ? null : c.conversations.first;
+    var card = 1;
+    return _Band(
+      child: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: _homePadding,
+        children: [
+          _stagger(
+            0,
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
                   children: [
-                    _Logo(session: s),
+                    _Logo(url: s.logoUrl, label: s.productLabel),
                     const Spacer(),
                     const TeamFaces(size: 40),
                     // 12 to the circle: its 44-point touch area adds 4.
@@ -267,61 +457,65 @@ class HomeTab extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 34),
-                Text(
-                  greetingFor(s),
-                  style: const TextStyle(fontSize: 29, height: 1.18, fontWeight: FontWeight.w700, color: Colors.white, letterSpacing: -0.4),
-                ),
+                Text(greetingFor(s), style: _greetingStyle),
                 if (subtitle.isNotEmpty) ...[
                   const SizedBox(height: 10),
-                  Text(subtitle, style: const TextStyle(fontSize: 15, height: 1.45, color: Color(0xEBFFFFFF))),
+                  Text(subtitle, style: _subtitleStyle),
                 ],
-                const SizedBox(height: 26),
-                if (recent != null) ...[
-                  _RecentCard(conversation: recent),
-                  const SizedBox(height: 14),
-                ],
-                MessengerCard(
-                  onTap: () => openLiveConversation(context),
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('Send us a message', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Palette.text)),
-                            const SizedBox(height: 3),
-                            Row(
-                              children: [
-                                // Green only while connected, as in the chat header:
-                                // before, nobody's presence is known.
-                                StatusDot(away: status.away || !c.connected, size: 7),
-                                const SizedBox(width: 6),
-                                Flexible(child: Text(status.home, style: const TextStyle(fontSize: 14, color: Palette.muted))),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Icon(Icons.send, size: 22, color: brand.primary),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-                _HomeHelpCard(onSearch: onSearch),
               ],
             ),
           ),
+          const SizedBox(height: 26),
+          if (recent != null) ...[
+            _stagger(card++, _RecentCard(conversation: recent)),
+            const SizedBox(height: 14),
+          ],
+          _stagger(
+            card++,
+            MessengerCard(
+              onTap: () => openLiveConversation(context),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Send us a message', style: _sendTitleStyle),
+                        const SizedBox(height: 3),
+                        Row(
+                          children: [
+                            // Green only while connected, as in the chat header:
+                            // before, nobody's presence is known.
+                            StatusDot(away: status.away || !c.connected, size: 7),
+                            const SizedBox(width: 6),
+                            Flexible(child: Text(status.home, style: _statusStyle)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Icon(Icons.send, size: 22, color: brand.primary),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+          _stagger(card, _HomeHelpCard(onSearch: widget.onSearch)),
         ],
       ),
     );
   }
 }
 
+/// The chatbot's logo on Home's band, faded in once it has loaded (it is
+/// usually fetched at sign-in, and then simply there); its initial on a
+/// white tile without one.
 class _Logo extends StatelessWidget {
-  const _Logo({required this.session});
-  final MessengerSession session;
+  const _Logo({required this.url, required this.label});
+  final String? url;
+  final String label;
 
   @override
   Widget build(BuildContext context) {
@@ -336,15 +530,15 @@ class _Logo extends StatelessWidget {
         boxShadow: const [BoxShadow(color: Color(0x1A000000), blurRadius: 8, offset: Offset(0, 2))],
       ),
       child: Text(
-        session.productLabel.isEmpty ? 'S' : session.productLabel.characters.first.toUpperCase(),
+        label.isEmpty ? 'S' : label.characters.first.toUpperCase(),
         style: TextStyle(color: brand.primary, fontSize: 18, fontWeight: FontWeight.w800),
       ),
     );
-    final logo = session.logoUrl;
+    final logo = url;
     if (logo == null) return tile;
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 140, maxHeight: 40),
-      child: Image.network(logo, height: 40, fit: BoxFit.contain, errorBuilder: (_, __, ___) => tile),
+      child: Image.network(logo, height: 40, fit: BoxFit.contain, errorBuilder: (_, __, ___) => tile, frameBuilder: fadeIn()),
     );
   }
 }
@@ -402,50 +596,144 @@ class _RecentCard extends StatelessWidget {
   }
 }
 
-class _HomeHelpCard extends StatelessWidget {
+/// A row of articles, and the skeleton rows that stand for them: one line
+/// of title is [articleRowHeight] tall either way, so nothing jumps.
+const articleRowHeight = 46.0;
+
+/// Five shimmering rows where the top articles will be.
+class ArticleRowsSkeleton extends StatelessWidget {
+  const ArticleRowsSkeleton({super.key, this.rows = 5, this.inset = 14});
+  final int rows;
+  final double inset;
+
+  static const _widths = <double>[0.78, 0.62, 0.7, 0.55, 0.66];
+
+  @override
+  Widget build(BuildContext context) {
+    return Shimmer(
+      child: LayoutBuilder(
+        builder: (context, box) => Column(
+          children: [
+            for (var i = 0; i < rows; i++)
+              SizedBox(
+                height: articleRowHeight,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: inset),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: SkeletonBar(width: (box.maxWidth - inset * 2) * _widths[i % _widths.length], height: 12),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The help card on Home: the search, then the top five articles. While
+/// they load, five skeleton rows of the same height stand for them; when
+/// they come, each row fades in over 150 ms, 30 ms after the one above. A
+/// card whose list is shorter than five eases to its height.
+class _HomeHelpCard extends StatefulWidget {
   const _HomeHelpCard({required this.onSearch});
-  final VoidCallback onSearch;
+
+  /// Null in the skeleton: nothing to search yet.
+  final VoidCallback? onSearch;
+
+  @override
+  State<_HomeHelpCard> createState() => _HomeHelpCardState();
+}
+
+class _HomeHelpCardState extends State<_HomeHelpCard> with SingleTickerProviderStateMixin {
+  static const _fade = Duration(milliseconds: 150);
+  static const _apart = Duration(milliseconds: 30);
+  static const _rows = 5;
+
+  late final AnimationController _in = AnimationController(vsync: this, duration: _fade + _apart * (_rows - 1), value: 1);
+  late final List<CurvedAnimation> _row = <CurvedAnimation>[
+    for (var i = 0; i < _rows; i++)
+      CurvedAnimation(
+        parent: _in,
+        curve: Interval(
+          (_apart * i).inMilliseconds / _in.duration!.inMilliseconds,
+          (_apart * i + _fade).inMilliseconds / _in.duration!.inMilliseconds,
+          curve: Curves.easeOut,
+        ),
+      ),
+  ];
+
+  /// The skeleton rows have been on screen: the articles fade in over them.
+  bool _waited = false;
+
+  @override
+  void dispose() {
+    for (final r in _row) {
+      r.dispose();
+    }
+    _in.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final c = context.messenger;
     final brand = c.brand;
+    final motion = !MediaQuery.disableAnimationsOf(context);
     Widget note(String text) => Padding(
           padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
           child: Text(text, style: const TextStyle(fontSize: 13, color: Palette.muted)),
         );
-    final List<Widget> rows;
-    if (c.session?.helpBaseUrl == null) {
-      rows = [note('Help articles are not available right now.')];
-    } else if (!c.articlesLoaded) {
-      rows = [note('Loading articles…')];
+    final loading = widget.onSearch == null || c.phase != MessengerPhase.ready || (c.session?.helpBaseUrl != null && !c.articlesLoaded);
+    final Widget rows;
+    if (loading) {
+      _waited = true;
+      rows = const ArticleRowsSkeleton(key: ValueKey<String>('skeleton'));
+    } else if (c.session?.helpBaseUrl == null) {
+      rows = note('Help articles are not available right now.');
     } else if (c.articles.isEmpty) {
-      rows = [note('Help articles will appear here once published.')];
+      rows = note('Help articles will appear here once published.');
     } else {
-      rows = [
-        for (final a in c.articles.take(5))
-          InkWell(
-            borderRadius: BorderRadius.circular(10),
-            onTap: () => openArticle(context, a.slug, title: a.title),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-              child: Row(
-                children: [
-                  Expanded(child: Text(a.title, style: const TextStyle(fontSize: 15, height: 1.4, color: Palette.body))),
-                  Icon(Icons.chevron_right, size: 18, color: brand.primary),
-                ],
+      if (_waited && motion) {
+        _waited = false;
+        _in.forward(from: 0);
+      }
+      final shown = c.articles.take(_rows).toList();
+      rows = Column(
+        key: const ValueKey<String>('articles'),
+        children: [
+          for (var i = 0; i < shown.length; i++)
+            FadeTransition(
+              opacity: _row[i],
+              child: InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: () => openArticle(context, shown[i].slug, title: shown[i].title),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: articleRowHeight),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    child: Row(
+                      children: [
+                        Expanded(child: Text(shown[i].title, style: const TextStyle(fontSize: 15, height: 1.4, color: Palette.body))),
+                        Icon(Icons.chevron_right, size: 18, color: brand.primary),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
-          ),
-      ];
+        ],
+      );
     }
+    final onSearch = widget.onSearch;
     return MessengerCard(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Semantics(
-            button: true,
+            button: onSearch != null,
             label: 'Search for help',
             child: InkWell(
               borderRadius: BorderRadius.circular(12),
@@ -466,7 +754,12 @@ class _HomeHelpCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          ...rows,
+          AnimatedSize(
+            duration: motion ? _fade : Duration.zero,
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: rows,
+          ),
         ],
       ),
     );
@@ -724,10 +1017,10 @@ class _HelpTabState extends State<HelpTab> {
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 16),
               children: [
-                if (c.session?.helpBaseUrl == null)
+                if (c.phase != MessengerPhase.ready || (c.session?.helpBaseUrl != null && !c.articlesLoaded))
+                  const ArticleRowsSkeleton(inset: 12)
+                else if (c.session?.helpBaseUrl == null)
                   note('Help articles are not available right now.')
-                else if (!c.articlesLoaded)
-                  note('Loading articles…')
                 else if (results.isEmpty)
                   note(q.isEmpty ? 'No articles published yet.' : 'No articles match “$q”.')
                 else

@@ -81,10 +81,10 @@ class MessengerRequests extends ChangeNotifier {
   }
 }
 
-/// The messenger, full screen, drawn natively.
+/// The messenger, drawn natively, in its sheet.
 ///
 /// It never leaves a customer on a blank or broken screen: while it signs in
-/// there is a spinner and a close button; if it cannot sign in — no signal,
+/// Home shows as a skeleton, with a close button; if it cannot sign in — no signal,
 /// our server down, [controller] null because `configure()` was never called
 /// — a native screen offers Try again and ways to reach the team that do not
 /// depend on our servers ([fallback]). Opened again for the same customer it
@@ -128,9 +128,6 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
   /// this opens.
   BuildContext? _inner;
   bool _openScheduled = false;
-
-  /// The spinner has been on screen: the tabs fade in over it when they come.
-  bool _waited = false;
 
   @override
   void initState() {
@@ -300,20 +297,20 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
               _resets = controller.resets;
               _afterReset();
             }
-            switch (controller.phase) {
-              case MessengerPhase.loading:
-                _waited = true;
-                return const _Loading();
-              case MessengerPhase.failed:
-                return _FallbackScreen(fallback: widget.fallback, browserUrl: widget.browserUrl, onRetry: controller.start);
-              case MessengerPhase.ready:
-                _scheduleOpen(controller);
-                // Opened again with what it had, the tabs are simply there.
-                return _FadeIn(
-                  play: _waited && !MediaQuery.disableAnimationsOf(context),
-                  child: MessengerTabs(key: ValueKey<int>(_tabsVersion), initialTab: _tab),
-                );
+            // While it signs in for the first time the tabs are already up,
+            // Home as a skeleton in the chatbot's colours; Home itself
+            // cross-fades in over it (see [HomeTab]).
+            final Widget shown;
+            if (controller.phase == MessengerPhase.failed) {
+              shown = _FallbackScreen(key: const ValueKey<String>('failed'), fallback: widget.fallback, browserUrl: widget.browserUrl, onRetry: controller.start);
+            } else {
+              if (controller.phase == MessengerPhase.ready) _scheduleOpen(controller);
+              shown = MessengerTabs(key: ValueKey<int>(_tabsVersion), initialTab: _tab);
             }
+            return AnimatedSwitcher(
+              duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
+              child: shown,
+            );
           }),
         );
       }),
@@ -321,87 +318,15 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
   }
 }
 
-/// Home fades in once, over white, when it arrives after the spinner,
-/// instead of popping in. Opacity only: nothing moves. [play] is read once,
-/// when it first shows; a later change of tab or screen does not play it
-/// again.
-class _FadeIn extends StatefulWidget {
-  const _FadeIn({required this.play, required this.child});
-  final bool play;
-  final Widget child;
-
-  @override
-  State<_FadeIn> createState() => _FadeInState();
-}
-
-class _FadeInState extends State<_FadeIn> with SingleTickerProviderStateMixin {
-  late final AnimationController _in = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 250),
-    value: widget.play ? 0 : 1,
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.play) _in.forward();
-  }
-
-  @override
-  void dispose() {
-    _in.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => ColoredBox(
-        color: Colors.white,
-        child: FadeTransition(opacity: CurvedAnimation(parent: _in, curve: Curves.easeOut), child: widget.child),
-      );
-}
-
 /// The messenger's own route: a sheet that rises over the app, which shows
 /// dimmed in a strip above it (see [MessengerSheetRoute]). A phone that asks
 /// for less motion gets it at once both ways.
 Route<void> messengerRoute(Widget page, {required bool reduceMotion}) => MessengerSheetRoute(page: page, reduceMotion: reduceMotion);
 
-class _Loading extends StatelessWidget {
-  const _Loading();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Connecting to support…', style: TextStyle(fontSize: 14, color: Palette.muted)),
-                ],
-              ),
-            ),
-            // Always a way out, even before anything has loaded.
-            Positioned(
-              top: 8,
-              right: 12,
-              child: RoundIconButton(icon: Icons.close, tooltip: 'Close', onTap: () => closeMessenger(context)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 /// "We can't open the chat right now" — with Try again, and the contacts that
 /// work without our servers.
 class _FallbackScreen extends StatelessWidget {
-  const _FallbackScreen({required this.fallback, this.browserUrl, this.onRetry});
+  const _FallbackScreen({super.key, required this.fallback, this.browserUrl, this.onRetry});
 
   final GLSupportChatFallback fallback;
   final String? browserUrl;

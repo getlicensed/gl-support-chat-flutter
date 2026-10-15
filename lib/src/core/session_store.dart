@@ -1,18 +1,27 @@
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Where the anonymous visitor id lives between app launches, so a customer
 /// who chatted before signing in (or who never signs in) finds their
-/// conversation again. One per chatbot. An interface so tests keep it in memory.
+/// conversation again; and, beside it, how the chatbot looked
+/// (`MessengerLook`), so the first open after a launch is in its colours.
+/// One of each per chatbot. An interface so tests keep it in memory.
 abstract class SessionStore {
   Future<String?> visitorId(String productId);
   Future<void> saveVisitorId(String productId, String visitorId);
   Future<void> forget(String productId);
+
+  /// The chatbot's look as last saved (JSON), or null.
+  Future<Map<String, dynamic>?> look(String productId);
+  Future<void> saveLook(String productId, Map<String, dynamic> look);
 }
 
 class PrefsSessionStore implements SessionStore {
   const PrefsSessionStore();
 
   static String _key(String productId) => 'gl_support_chat.visitor.$productId';
+  static String _lookKey(String productId) => 'gl_support_chat.look.$productId';
 
   @override
   Future<String?> visitorId(String productId) async {
@@ -40,10 +49,32 @@ class PrefsSessionStore implements SessionStore {
       // nothing stored, nothing to forget
     }
   }
+
+  @override
+  Future<Map<String, dynamic>?> look(String productId) async {
+    try {
+      final raw = (await SharedPreferences.getInstance()).getString(_lookKey(productId));
+      if (raw == null) return null;
+      final j = jsonDecode(raw);
+      return j is Map ? Map<String, dynamic>.from(j) : null;
+    } catch (_) {
+      return null; // nothing usable: the default colours until it signs in
+    }
+  }
+
+  @override
+  Future<void> saveLook(String productId, Map<String, dynamic> look) async {
+    try {
+      await (await SharedPreferences.getInstance()).setString(_lookKey(productId), jsonEncode(look));
+    } catch (_) {
+      // the next launch opens in the default colours; nothing depends on it
+    }
+  }
 }
 
 class MemorySessionStore implements SessionStore {
   final Map<String, String> _ids = <String, String>{};
+  final Map<String, Map<String, dynamic>> _looks = <String, Map<String, dynamic>>{};
 
   @override
   Future<String?> visitorId(String productId) async => _ids[productId];
@@ -53,4 +84,10 @@ class MemorySessionStore implements SessionStore {
 
   @override
   Future<void> forget(String productId) async => _ids.remove(productId);
+
+  @override
+  Future<Map<String, dynamic>?> look(String productId) async => _looks[productId];
+
+  @override
+  Future<void> saveLook(String productId, Map<String, dynamic> look) async => _looks[productId] = look;
 }
