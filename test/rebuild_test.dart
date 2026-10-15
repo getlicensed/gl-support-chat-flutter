@@ -14,8 +14,9 @@ import 'support/thread.dart';
 // builds in 16 frames). Now a row is built again only when its own message
 // changes.
 
-/// The widgets a message's row is built from.
-const messageRows = <String>{'_Bubble', '_BubbleBox', '_RichText', '_MineRow', '_AuthorRow'};
+/// The widgets a message's row is built from (its bubble's box is the
+/// typing dots' too, so it is not counted apart).
+const messageRows = <String>{'_Bubble', '_RichText', '_MineRow', '_TeamRow'};
 
 void main() {
   testWidgets('a typing tick, a seen receipt, someone coming online, a keystroke: no message row is built again', (tester) async {

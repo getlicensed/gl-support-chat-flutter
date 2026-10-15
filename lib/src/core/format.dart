@@ -128,6 +128,9 @@ String shortAgo(DateTime then, DateTime now) {
   return then.year == now.year ? day : '$day ${then.year}';
 }
 
+/// "Just now", then as [shortAgo]: how long ago, under the thread's bubbles.
+String agoLabel(DateTime then, DateTime now) => now.difference(then).inMinutes < 1 ? 'Just now' : shortAgo(then, now);
+
 /// What the Messages list shows for a conversation's last message.
 String previewLine(ConversationSummary c) {
   final body = (c.lastBody ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();

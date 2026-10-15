@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter/material.dart';
@@ -370,56 +371,150 @@ class _Rows {
   Object? _last;
 }
 
+/// Messages from the same author, each within five minutes of the one
+/// before, are a group: their bubbles 4 points apart with tight corners
+/// where they meet, the team's name, time and face once, at the last of
+/// them. Groups are 16 points apart.
+const _groupGap = 16.0;
+const _inGroupGap = 4.0;
+const _groupWithin = Duration(minutes: 5);
+
+/// The column the team's faces sit in, beside their bubbles and the typing
+/// dots alike: 28 points and a gap of 8.
+const _faceSize = 28.0;
+const _faceColumn = _faceSize + 8;
+
+/// Where a bubble sits in its group.
+enum _Pos { single, top, middle, bottom }
+
+extension on _Pos {
+  bool get starts => this == _Pos.single || this == _Pos.top;
+  bool get ends => this == _Pos.single || this == _Pos.bottom;
+}
+
+/// The room above a bubble's row: none at the top of the thread.
+double _gapAbove(_Pos pos, bool first) => first ? 0 : (pos.starts ? _groupGap : _inGroupGap);
+
+/// The thread's bubbles in order, and whatever comes between them, put into
+/// groups before they become rows: a bubble's corners, room and lines depend
+/// on the bubbles either side of it.
+class _Run {
+  _Run(this.rows);
+  final _Rows rows;
+  final _parts = <({String? who, DateTime? at, bool mine, bool breaks, void Function(_Pos pos, bool status, bool first) add})>[];
+
+  /// A bubble by [who] at [at]. [add] makes its row once its place is
+  /// known; [mine]: the customer's, whose last one says whether it was seen.
+  void bubble(String who, DateTime at, void Function(_Pos pos, bool status, bool first) add, {bool mine = false}) =>
+      _parts.add((who: who, at: at, mine: mine, breaks: false, add: add));
+
+  /// A row between bubbles: a divider, a CSAT card, buttons. One that
+  /// [breaks] ends the group above it.
+  void between(void Function() add, {bool breaks = true}) =>
+      _parts.add((who: null, at: null, mine: false, breaks: breaks, add: (_, __, ___) => add()));
+
+  void flush() {
+    final parts = _parts;
+    var lastMine = -1;
+    for (var k = 0; k < parts.length; k++) {
+      if (parts[k].mine) lastMine = k;
+    }
+    // The bubble each one joins on to, above and below: the nearest
+    // bubble, with nothing that breaks the group between.
+    int? near(int k, int step) {
+      for (var j = k + step; j >= 0 && j < parts.length; j += step) {
+        if (parts[j].who != null) return j;
+        if (parts[j].breaks) return null;
+      }
+      return null;
+    }
+
+    bool joins(int? a, int? b) {
+      if (a == null || b == null) return false;
+      final x = parts[a];
+      final y = parts[b];
+      return x.who == y.who && y.at!.difference(x.at!).abs() <= _groupWithin;
+    }
+
+    for (var k = 0; k < parts.length; k++) {
+      final p = parts[k];
+      if (p.who == null) {
+        p.add(_Pos.single, false, false);
+        continue;
+      }
+      final starts = !joins(near(k, -1), k);
+      final ends = !joins(k, near(k, 1));
+      final pos = starts ? (ends ? _Pos.single : _Pos.top) : (ends ? _Pos.bottom : _Pos.middle);
+      p.add(pos, k == lastMine, rows.list.isEmpty);
+    }
+    _parts.clear();
+  }
+}
+
+/// The name a teammate, the AI or the workflow goes by in the thread.
+String _authorName(ChatMessage m, String productLabel) => switch (m.authorType) {
+      'bot' => productLabel.isNotEmpty ? productLabel : (m.authorName ?? 'Support'),
+      'ai' => m.authorName ?? 'AI',
+      _ => m.authorName ?? 'Support',
+    };
+
 List<Widget> _liveRows(BuildContext context, MessengerController c, _RowCache cache) {
   cache.begin(c);
   final rows = _Rows(cache);
+  final run = _Run(rows);
   final label = c.session?.productLabel ?? '';
   if (c.live.isEmpty) {
     final pendingCsat = c.pendingCsatRatingId;
     if (pendingCsat != null) {
       final title = label.isEmpty ? 'How did we do? Rate your last conversation.' : 'How did we do? Rate your last conversation with $label.';
-      rows.add('csat-pending:$pendingCsat', title, () => CsatCard(ratingId: pendingCsat, title: title));
+      run.between(() => rows.add('csat-pending:$pendingCsat', title, () => CsatCard(ratingId: pendingCsat, title: title)));
     }
     final preview = c.preview;
     if (preview != null) {
-      final shownAt = c.previewShownAt;
-      rows.add('preview-author', (preview, shownAt), () => _AuthorRow(authorType: 'bot', name: label, time: shownAt ?? DateTime.now()));
+      final shownAt = c.previewShownAt ?? DateTime.now();
       for (var i = 0; i < preview.messages.length; i++) {
         final m = preview.messages[i];
         final meta = m.meta;
         if (m.body.trim().isNotEmpty || meta?.imageUrl != null || meta?.articleSlug != null || meta?.fileUrl != null) {
-          rows.add('preview:$i', m, () => _Bubble(
-                message: ChatMessage(id: '', conversationId: '', body: m.body, authorType: 'bot', createdAt: DateTime.now(), meta: meta),
-              ));
+          run.bubble('bot', shownAt, (pos, _, first) => rows.add('preview:$i', (m, pos, first, label), () => _TeamRow(
+                message: ChatMessage(id: '', conversationId: '', body: m.body, authorType: 'bot', createdAt: shownAt, meta: meta),
+                pos: pos,
+                name: label,
+                first: first,
+              )));
         }
         if (meta != null && meta.buttons.isNotEmpty) {
-          rows.add('preview-buttons:$i', m, () => _FlowButtons(buttons: meta.buttons, onTap: c.startWorkflow));
+          run.between(() => rows.add('preview-buttons:$i', m, () => _FlowButtons(buttons: meta.buttons, onTap: c.startWorkflow)));
         }
       }
     } else if (c.typingAuthor != null) {
       final author = c.typingAuthor;
-      rows.add('typing', (author, 0), () => _TypingSlot(author: author, replies: 0));
+      run.between(() => rows.add('typing', (author, 0, rows.list.isEmpty), () => _TypingSlot(author: author, replies: 0, first: rows.list.isEmpty)), breaks: false);
     } else {
       // The chips fall back to the top articles: built again when those come.
-      rows.add('intro', c.articles, () => _IntroAndChips(chips: c.chips));
+      run.between(() => rows.add('intro', c.articles, () => _IntroAndChips(chips: c.chips)));
     }
   } else {
-    _messageRows(context, c, c.live, cache, agentSeenAt: c.agentSeenAt, divider: c.dividerIndex, livePrompt: c.livePrompt, into: rows);
+    _messageRows(context, c, c.live, cache, agentSeenAt: c.agentSeenAt, divider: c.dividerIndex, livePrompt: c.livePrompt, run: run);
     // Always there, empty while nobody types: it opens and closes in place.
     var replies = 0;
     for (final m in c.live) {
       if (!m.fromVisitor) replies++;
     }
     final author = c.typingAuthor;
-    rows.add('typing', (author, replies), () => _TypingSlot(author: author, replies: replies));
+    run.between(() => rows.add('typing', (author, replies), () => _TypingSlot(author: author, replies: replies)), breaks: false);
   }
   final notice = c.flowNotice;
-  if (notice != null) rows.add('notice', notice, () => _ErrorLine(notice));
+  if (notice != null) run.between(() => rows.add('notice', notice, () => _ErrorLine(notice)));
   for (final out in c.outgoing) {
     // Its copy from the server is in the thread already, in this row.
     if (c.isTakenOver(out)) continue;
-    rows.add('out:${out.localId}', (out.error, out.image), () => _MineRow(out: out), message: out);
+    run.bubble('visitor', out.createdAt, mine: true, (pos, _, first) {
+      // On its way, or refused: its line says so, last or not.
+      rows.add('out:${out.localId}', (out.error, out.image, pos, first), () => _MineRow(out: out, pos: pos, first: first, status: true), message: out);
+    });
   }
+  run.flush();
   cache.end();
   return rows.list;
 }
@@ -432,27 +527,16 @@ List<Widget> _messageRows(
   DateTime? agentSeenAt,
   int divider = -1,
   ChatMessage? livePrompt,
-  _Rows? into,
+  _Run? run,
 }) {
-  final live = into != null;
+  final live = run != null;
   if (!live) cache.begin(c);
-  final rows = into ?? _Rows(cache);
+  final into = run ?? _Run(_Rows(cache));
+  final rows = into.rows;
   final label = c.session?.productLabel ?? '';
   for (var i = 0; i < messages.length; i++) {
     final m = messages[i];
-    if (i == divider) rows.add('divider', null, () => const _NewMessagesDivider());
-    if (!m.fromVisitor) {
-      final prev = i == 0 ? null : messages[i - 1];
-      final startsGroup = prev == null || prev.fromVisitor || prev.authorType != m.authorType || prev.authorName != m.authorName;
-      if (startsGroup) {
-        final name = switch (m.authorType) {
-          'bot' => label.isNotEmpty ? label : (m.authorName ?? 'Support'),
-          'ai' => m.authorName ?? 'AI',
-          _ => m.authorName ?? 'Support',
-        };
-        rows.add('author:${m.id}', (m.authorType, name, m.createdAt, m.authorId), () => _AuthorRow(authorType: m.authorType, name: name, time: m.createdAt, authorId: m.authorId), message: m);
-      }
-    }
+    if (i == divider) into.between(() => rows.add('divider', null, () => const _NewMessagesDivider()));
     final meta = m.meta;
     final bodyless = m.authorType == 'bot' && m.body.trim().isEmpty && m.attachments.isEmpty &&
         meta?.imageUrl == null && meta?.articleSlug == null && meta?.fileUrl == null;
@@ -460,26 +544,34 @@ List<Widget> _messageRows(
       if (m.fromVisitor) {
         // Written here: the row it was drawn in while on its way.
         final local = live ? c.sentAs(m) : null;
-        // Live, its tick listens for the team's seen receipts itself; in a
-        // past conversation it is what was fetched.
-        rows.add(local != null ? 'out:$local' : 'msg:${m.id}', (m, m.id, m.body, live ? null : agentSeenAt),
-            () => _MineRow(message: m, seenAt: live ? null : agentSeenAt, live: live), message: m);
+        into.bubble('visitor', m.createdAt, mine: true, (pos, status, first) {
+          // Live, its line listens for the team's seen receipts itself; in a
+          // past conversation it is what was fetched.
+          final seenAt = live ? null : agentSeenAt;
+          rows.add(local != null ? 'out:$local' : 'msg:${m.id}', (m, m.id, m.body, pos, status, first, seenAt),
+              () => _MineRow(message: m, pos: pos, first: first, status: status, seenAt: seenAt, live: live), message: m);
+        });
       } else {
-        // The id and the words: an AI answer types out into the same message.
-        rows.add('msg:${m.id}', (m, m.id, m.body), () => _Bubble(message: m), message: m);
+        final name = _authorName(m, label);
+        into.bubble('${m.authorType}|${m.authorId}|${m.authorName}', m.createdAt, (pos, _, first) {
+          // The id and the words: an AI answer types out into the same message.
+          rows.add('msg:${m.id}', (m, m.id, m.body, pos, first, name), () => _TeamRow(message: m, pos: pos, name: name, first: first), message: m);
+        });
       }
     }
     final csat = meta?.csatRatingId;
-    if (m.authorType == 'bot' && csat != null) rows.add('csat:${m.id}', csat, () => CsatCard(ratingId: csat, title: 'Tap a face'), message: m);
+    if (m.authorType == 'bot' && csat != null) into.between(() => rows.add('csat:${m.id}', csat, () => CsatCard(ratingId: csat, title: 'Tap a face'), message: m));
     if (livePrompt != null && identical(m, livePrompt)) {
       if (meta!.buttons.isNotEmpty) {
-        rows.add('buttons:${m.id}', m, () => _FlowButtons(buttons: meta.buttons, onTap: (b) => c.choose(m, b)), message: m);
+        into.between(() => rows.add('buttons:${m.id}', m, () => _FlowButtons(buttons: meta.buttons, onTap: (b) => c.choose(m, b)), message: m));
       } else if (meta.collect != null) {
-        rows.add('collect:${m.id}', m, () => _CollectBox(prompt: m, request: meta.collect!), message: m);
+        into.between(() => rows.add('collect:${m.id}', m, () => _CollectBox(prompt: m, request: meta.collect!), message: m));
       }
     }
   }
-  if (!live) cache.end();
+  if (live) return rows.list;
+  into.flush();
+  cache.end();
   return rows.list;
 }
 
@@ -563,6 +655,11 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   /// The dots a reply is taking the place of, for this frame.
   _Dots? _dots;
 
+  /// The time, for the "2m" under bubbles: ticked every 15 seconds, so a
+  /// label is never more than that behind; only those labels listen.
+  final _now = ValueNotifier<DateTime>(DateTime.now());
+  late final Timer _clock;
+
   /// Replies that arrived while the reader was up the thread.
   int _unseen = 0;
 
@@ -586,10 +683,13 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   void initState() {
     super.initState();
     _scroll.addListener(_onScroll);
+    _clock = Timer.periodic(const Duration(seconds: 15), (_) => _now.value = DateTime.now());
   }
 
   @override
   void dispose() {
+    _clock.cancel();
+    _now.dispose();
     _scroll.dispose();
     _glide.dispose();
     super.dispose();
@@ -837,7 +937,7 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
     return Stack(
       children: [
         // Its own layer: the glide repaints the thread, not the header and composer.
-        Positioned.fill(child: RepaintBoundary(child: Listener(onPointerDown: _fingerDown, child: _Shifted(thread: this, child: list)))),
+        Positioned.fill(child: RepaintBoundary(child: Listener(onPointerDown: _fingerDown, child: _Shifted(thread: this, child: _Now(clock: _now, child: list))))),
         // It fades in and out over 200 ms rather than blink.
         Positioned(
           left: 0,
@@ -1233,54 +1333,114 @@ class _PastFooter extends StatelessWidget {
 // Messages
 // ==========================================================================
 
-String _clock(BuildContext context, DateTime t) {
-  final loc = MaterialLocalizations.of(context);
-  final time = loc.formatTimeOfDay(TimeOfDay.fromDateTime(t), alwaysUse24HourFormat: MediaQuery.alwaysUse24HourFormatOf(context));
-  final now = DateTime.now();
-  final today = t.year == now.year && t.month == now.month && t.day == now.day;
-  return today ? time : '${loc.formatShortMonthDay(t)} $time';
-}
-
 /// A teammate's photo, by their user id: the path is only built from a
 /// well-formed id. Null without one.
 String? _teammatePhoto(String? userId) =>
     userId != null && RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(userId) ? '/widget/avatar/$userId' : null;
 
-class _AuthorRow extends StatelessWidget {
-  const _AuthorRow({required this.authorType, required this.name, required this.time, this.authorId});
+/// The face beside a group of the team's bubbles: the teammate's photo
+/// (their initial without one), the chatbot's circle for the workflow — as
+/// Intercom shows the brand beside the bot — and a robot for the AI.
+Widget _teamFace(String authorType, String name, String? authorId) {
+  if (authorType == 'ai') return InitialAvatar(label: name, size: _faceSize, icon: Icons.smart_toy_outlined);
+  if (authorType == 'bot') return LogoAvatar(label: name, size: _faceSize);
+  final photo = authorType == 'agent' ? _teammatePhoto(authorId) : null;
+  if (photo != null) return PersonAvatar(name: name, photoPath: photo, size: _faceSize);
+  return InitialAvatar(label: name, size: _faceSize);
+}
 
-  final String authorType;
-  final String name;
-  final DateTime time;
-  final String? authorId;
+/// The time now, for the "2m" under bubbles: the thread ticks it so they
+/// stay true, and only they are built again for it.
+class _Now extends InheritedWidget {
+  const _Now({required this.clock, required super.child});
+  final ValueListenable<DateTime> clock;
+
+  @override
+  bool updateShouldNotify(_Now old) => !identical(clock, old.clock);
+}
+
+/// How long ago [at] was — "Just now", "2m" — after [prefix], kept true as
+/// the minutes pass.
+class _Ago extends StatelessWidget {
+  const _Ago({super.key, required this.at, required this.style, this.prefix = ''});
+  final DateTime at;
+  final String prefix;
+  final TextStyle style;
 
   @override
   Widget build(BuildContext context) {
-    final Widget avatar;
-    if (authorType == 'ai') {
-      avatar = InitialAvatar(label: name, size: 22, icon: Icons.smart_toy_outlined);
-    } else if (authorType == 'bot') {
-      // The workflow speaks as the chatbot: its logo, as Intercom shows the brand beside the bot.
-      avatar = LogoAvatar(label: name, size: 22);
-    } else if (authorType == 'agent' && _teammatePhoto(authorId) != null) {
-      avatar = PersonAvatar(name: name, photoPath: _teammatePhoto(authorId), size: 22);
-    } else {
-      avatar = InitialAvatar(label: name, size: 22);
-    }
-    return Padding(
-      padding: const EdgeInsets.only(top: 6, bottom: 4, left: 2),
-      child: Row(
+    Widget line(BuildContext _, Object? __, Widget? ___) =>
+        Text('$prefix${agoLabel(at, DateTime.now())}', maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    final clock = context.getInheritedWidgetOfExactType<_Now>()?.clock;
+    return clock == null ? line(context, null, null) : ValueListenableBuilder<DateTime>(valueListenable: clock, builder: line);
+  }
+}
+
+/// The small print under a group or a message: names, times, "Seen".
+const _smallPrint = TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Palette.muted);
+
+/// One of the team's messages — a teammate's, the AI's, the workflow's — in
+/// its group: its bubble beside the face column, which shows the face at
+/// the group's last bubble; under that bubble, the name and how long ago.
+class _TeamRow extends StatelessWidget {
+  const _TeamRow({required this.message, required this.pos, required this.name, this.first = false});
+
+  final ChatMessage message;
+  final _Pos pos;
+  final String name;
+
+  /// The first row of the thread: no room above it.
+  final bool first;
+
+  @override
+  Widget build(BuildContext context) {
+    final m = message;
+    final last = pos.ends;
+    Widget bubble = _Bubble(message: m, pos: pos);
+    // A reply that takes the typing dots' place: they fade out over its
+    // bubble, the same shape in the same place, as it fades in.
+    final over = context.getInheritedWidgetOfExactType<_DotsHandover>();
+    if (over != null) {
+      bubble = Stack(
+        clipBehavior: Clip.none,
         children: [
-          avatar,
-          const SizedBox(width: 6),
-          Flexible(
-            child: Text(
-              '$name · ${_clock(context, time)}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Palette.muted),
+          bubble,
+          Positioned(
+            left: 0,
+            top: 0,
+            child: IgnorePointer(
+              child: ExcludeSemantics(
+                child: AnimatedBuilder(
+                  animation: over.progress,
+                  builder: (_, __) {
+                    final t = over.progress.value;
+                    return t >= 1 ? const SizedBox.shrink() : Opacity(opacity: (over.shown * (1 - t)).clamp(0.0, 1.0), child: const _DotsBubble());
+                  },
+                ),
+              ),
             ),
           ),
+        ],
+      );
+    }
+    return Padding(
+      padding: EdgeInsets.only(top: _gapAbove(pos, first)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              SizedBox(width: _faceSize, height: last ? _faceSize : 0, child: last ? _teamFace(m.authorType, name, m.authorId) : null),
+              const SizedBox(width: _faceColumn - _faceSize),
+              Flexible(child: bubble),
+            ],
+          ),
+          if (last)
+            Padding(
+              padding: const EdgeInsets.only(left: _faceColumn + 2, top: 4),
+              child: _Ago(prefix: '$name · ', at: m.createdAt, style: _smallPrint),
+            ),
         ],
       ),
     );
@@ -1359,12 +1519,13 @@ class _RichTextState extends State<_RichText> {
   }
 }
 
-/// A message in the thread: the team's, the AI's, the workflow's — or,
-/// inside [_MineRow], the customer's own.
+/// A message's bubble: the team's, the AI's, the workflow's — inside
+/// [_TeamRow] — or, inside [_MineRow], the customer's own.
 class _Bubble extends StatelessWidget {
-  const _Bubble({required this.message});
+  const _Bubble({required this.message, this.pos = _Pos.single});
 
   final ChatMessage message;
+  final _Pos pos;
 
   @override
   Widget build(BuildContext context) {
@@ -1405,8 +1566,8 @@ class _Bubble extends StatelessWidget {
         parts[i].$2,
       ],
     ];
-    final bubble = _BubbleBox(mine: mine, tight: onlyMedia, children: children);
-    final copied = GestureDetector(
+    final bubble = _BubbleBox(mine: mine, pos: pos, tight: onlyMedia, children: children);
+    return GestureDetector(
       onLongPress: text.isEmpty
           ? null
           : () {
@@ -1415,20 +1576,29 @@ class _Bubble extends StatelessWidget {
             },
       child: bubble,
     );
-    if (mine) return copied;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [copied]),
-    );
   }
 }
 
+/// A bubble's corners: 20, and 4 on the author's side where it meets the
+/// bubble above or below in its group — and at the foot of a lone bubble
+/// or a group's first, where the next would join.
+BorderRadius _corners(bool mine, _Pos pos) {
+  const round = Radius.circular(20);
+  const tight = Radius.circular(4);
+  final top = pos.starts ? round : tight;
+  final foot = pos == _Pos.bottom ? round : tight;
+  return mine
+      ? BorderRadius.only(topLeft: round, topRight: top, bottomRight: foot, bottomLeft: round)
+      : BorderRadius.only(topLeft: top, topRight: round, bottomRight: round, bottomLeft: foot);
+}
+
 /// A bubble's shape and colour: the brand colour on the right for the
-/// customer, grey on the left for everyone else. [tight]: photos alone,
-/// edge to edge, cut to the bubble's corners.
+/// customer, grey on the left for everyone else, its corners by its place
+/// in its group. [tight]: photos alone, edge to edge, cut to the corners.
 class _BubbleBox extends StatelessWidget {
-  const _BubbleBox({required this.mine, required this.children, this.tight = false});
+  const _BubbleBox({required this.mine, required this.children, this.pos = _Pos.single, this.tight = false});
   final bool mine;
+  final _Pos pos;
   final bool tight;
   final List<Widget> children;
 
@@ -1439,43 +1609,47 @@ class _BubbleBox extends StatelessWidget {
       constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.78),
       padding: tight ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       clipBehavior: tight ? Clip.antiAlias : Clip.none,
-      decoration: BoxDecoration(
-        color: mine ? brand.primary : Palette.agentBubble,
-        borderRadius: BorderRadius.only(
-          topLeft: const Radius.circular(18),
-          topRight: const Radius.circular(18),
-          bottomLeft: Radius.circular(mine ? 18 : 4),
-          bottomRight: Radius.circular(mine ? 4 : 18),
-        ),
-      ),
+      decoration: BoxDecoration(color: mine ? brand.primary : Palette.agentBubble, borderRadius: _corners(mine, pos)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: children),
     );
   }
 }
 
-/// One of the customer's own messages: its bubble, and the line under it —
-/// "Sending…" (only if it takes a while), why it failed, or its time and
-/// tick. The same row from the moment it is written to the server's copy
-/// (the copy takes its key), so the bubble never flickers and the line
-/// under it fades from one to the next. The bubble is whole at once: never
-/// dimmed while it goes.
+/// One of the customer's own messages, in its group: its bubble and, under
+/// the last of them (or one on its way, or refused), one line — "Sending…"
+/// only if it takes a while, then "Not seen yet · Just now", then "Seen ·
+/// 2m"; or "Failed to send · Retry". The same row from the moment it is
+/// written to the server's copy (the copy takes its key), so the bubble
+/// never flickers and the line under it fades from one to the next. The
+/// bubble is whole at once: never dimmed while it goes.
 class _MineRow extends StatelessWidget {
-  const _MineRow({this.message, this.out, this.seenAt, this.live = false}) : assert((message == null) != (out == null));
+  const _MineRow({this.message, this.out, this.pos = _Pos.single, this.first = false, this.status = false, this.seenAt, this.live = false})
+      : assert((message == null) != (out == null));
 
   /// The server's copy, once there is one.
   final ChatMessage? message;
 
   /// The message on its way, or one the server refused.
   final OutgoingMessage? out;
+  final _Pos pos;
+
+  /// The first row of the thread: no room above it.
+  final bool first;
+
+  /// The line under it: the customer's last message, or one not yet sent.
+  final bool status;
 
   /// When the team last read the conversation, in a past one.
   final DateTime? seenAt;
 
-  /// In the live conversation: the tick follows the controller's
+  /// In the live conversation: "Seen" follows the controller's
   /// [MessengerController.agentSeenAt] itself.
   final bool live;
 
   static const statusFade = Duration(milliseconds: 150);
+
+  /// What a refused message says when the server gave no reason of its own.
+  static const _noReason = 'Something went wrong — please try again.';
 
   @override
   Widget build(BuildContext context) {
@@ -1484,22 +1658,14 @@ class _MineRow extends StatelessWidget {
     final m = message;
     final o = out;
     final Widget bubble;
-    final Widget status;
+    Widget? line;
+    String? reason;
     if (m != null) {
-      bubble = _Bubble(message: m);
-      Widget tick(bool seen) => Icon(seen ? Icons.done_all : Icons.done, size: 14, color: seen ? Palette.body : Palette.muted, semanticLabel: seen ? 'Seen' : 'Delivered');
+      bubble = _Bubble(message: m, pos: pos);
       bool seenBy(DateTime? at) => at != null && !m.createdAt.isAfter(at);
-      status = Row(
-        key: const ValueKey<String>('sent'),
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(_clock(context, m.createdAt), style: const TextStyle(fontSize: 11, color: Palette.muted)),
-          const SizedBox(width: 4),
-          // ✓ delivered, ✓✓ the team has read it. A seen receipt redraws
-          // the tick, not the row.
-          if (live) MessengerSelector<bool>(select: (c) => seenBy(c.agentSeenAt), builder: (_, seen) => tick(seen)) else tick(seenBy(seenAt)),
-        ],
-      );
+      Widget said(bool seen) => _Ago(key: const ValueKey<String>('sent'), prefix: seen ? 'Seen · ' : 'Not seen yet · ', at: m.createdAt, style: _smallPrint);
+      // A seen receipt redraws the line, not the row.
+      if (status) line = live ? MessengerSelector<bool>(key: const ValueKey<String>('sent'), select: (c) => seenBy(c.agentSeenAt), builder: (_, seen) => said(seen)) : said(seenBy(seenAt));
     } else {
       final image = o!.image;
       bubble = AnimatedOpacity(
@@ -1509,6 +1675,7 @@ class _MineRow extends StatelessWidget {
         duration: fullTime(statusFade),
         child: _BubbleBox(
           mine: true,
+          pos: pos,
           tight: image != null && o.text.isEmpty,
           children: [
             // Kept: the photo is the same picture under the server's copy.
@@ -1518,64 +1685,90 @@ class _MineRow extends StatelessWidget {
           ],
         ),
       );
-      status = !o.failed
-          ? const _SendingLine(key: ValueKey<String>('sending'))
-          : Wrap(
-              key: const ValueKey<String>('failed'),
-              crossAxisAlignment: WrapCrossAlignment.center,
-              alignment: WrapAlignment.end,
-              children: [
-                Text(o.error!, textAlign: TextAlign.end, style: const TextStyle(fontSize: 12, color: Palette.error)),
-                TextButton(onPressed: () => c.retry(o), child: const Text('Try again')),
-                TextButton(onPressed: () => c.discard(o), child: const Text('Delete', style: TextStyle(color: Palette.muted))),
-              ],
-            );
+      if (!o.failed) {
+        line = const _SendingLine(key: ValueKey<String>('sending'));
+      } else {
+        // The server's own sentence ("wait 9s", "too long") says why.
+        reason = o.error == _noReason ? null : o.error;
+        // Wraps rather than overflow, at a large text size.
+        line = Wrap(
+          key: const ValueKey<String>('failed'),
+          alignment: WrapAlignment.end,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            const Text('Failed to send ·', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Palette.error)),
+            _LineButton(label: 'Retry', color: Palette.error, onTap: () => c.retry(o)),
+            const Text('·', style: _smallPrint),
+            _LineButton(label: 'Delete', color: Palette.muted, onTap: () => c.discard(o)),
+          ],
+        );
+      }
     }
     // Even with less motion asked for, as Intercom's: see [fullTime].
     final fade = fullTime(statusFade);
+    final said = line;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: EdgeInsets.only(top: _gapAbove(pos, first)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           bubble,
+          if (reason != null)
+            Padding(padding: const EdgeInsets.only(top: 4, right: 2), child: Text(reason, textAlign: TextAlign.end, style: const TextStyle(fontSize: 12, color: Palette.error))),
           // The line under it is one line tall whatever it says, from
-          // "Sending…" to its time: nothing below moves as it changes. Not
+          // "Sending…" to "Seen": nothing below moves as it changes. Not
           // sized to its words as they change, which cut the new words
           // (":54 PM") while the width eased; the old fade out over the new
           // as wide as the wider of the two, right-aligned.
-          Padding(
-            padding: const EdgeInsets.only(top: 3, right: 2),
-            child: Stack(
-              alignment: Alignment.topRight,
-              children: [
-                const _StatusLineHeight(),
-                AnimatedSwitcher(
-                  duration: fade,
-                  layoutBuilder: (current, previous) => Stack(alignment: Alignment.topRight, children: [...previous, if (current != null) current]),
-                  child: status,
-                ),
-              ],
+          if (said != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, right: 2),
+              child: Stack(
+                alignment: Alignment.centerRight,
+                children: [
+                  const _StatusLineHeight(),
+                  AnimatedSwitcher(
+                    duration: fade,
+                    layoutBuilder: (current, previous) => Stack(alignment: Alignment.centerRight, children: [...previous, if (current != null) current]),
+                    child: said,
+                  ),
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );
   }
 }
 
+/// A word to tap in a status line ("Retry"): the line's size, with the
+/// room around it taking the tap too.
+class _LineButton extends StatelessWidget {
+  const _LineButton({required this.label, required this.color, required this.onTap});
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => TextButton(
+        onPressed: onTap,
+        style: TextButton.styleFrom(
+          foregroundColor: color,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          minimumSize: const Size(RoundIconButton.minTarget, RoundIconButton.minTarget),
+          textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+        ),
+        child: Text(label),
+      );
+}
+
 /// Holds a status line's height, at any text size: one line of its small
-/// print beside a tick.
+/// print.
 class _StatusLineHeight extends StatelessWidget {
   const _StatusLineHeight();
 
   @override
-  Widget build(BuildContext context) => const ExcludeSemantics(
-        child: Opacity(
-          opacity: 0,
-          child: Row(mainAxisSize: MainAxisSize.min, children: [Text('Hg', style: TextStyle(fontSize: 11)), SizedBox(width: 1, height: 14)]),
-        ),
-      );
+  Widget build(BuildContext context) => const ExcludeSemantics(child: Opacity(opacity: 0, child: Text('Hg', style: _smallPrint)));
 }
 
 /// "Sending…" under a message on its way — only once it has taken longer
@@ -1614,7 +1807,7 @@ class _SendingLineState extends State<_SendingLine> {
         opacity: _shown ? 1 : 0,
         // Even with less motion asked for, as Intercom's: see [fullTime].
         duration: fullTime(_MineRow.statusFade),
-        child: const Text('Sending…', style: TextStyle(fontSize: 11, color: Palette.muted)),
+        child: const Text('Sending…', style: _smallPrint),
       );
 }
 
@@ -1954,34 +2147,23 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
   Widget build(BuildContext context) {
     final t = _t;
     if (t == null) return widget.child;
-    final shown = FadeTransition(opacity: _fade ? t : kAlwaysCompleteAnimation, child: _rise ? _Rise(t, child: widget.child) : widget.child);
     final dots = _dots;
-    if (dots == null) return shown;
-    // The dots over the reply's first row, at its top: the same place in
-    // the thread, the face in the same column. Laid out by the row alone,
-    // and gone with the fade (the row keeps its place in the Stack).
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        shown,
-        Positioned(
-          left: 0,
-          right: 0,
-          top: 0,
-          child: IgnorePointer(
-            child: ExcludeSemantics(
-              child: AnimatedBuilder(
-                animation: t,
-                builder: (_, __) => t.value >= 1
-                    ? const SizedBox.shrink()
-                    : Opacity(opacity: (dots.shown * (1 - t.value)).clamp(0.0, 1.0), child: _TypingRow(author: dots.author)),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+    // The reply's first row draws the dots over its bubble ([_TeamRow]),
+    // fading out as the row fades in.
+    final row = dots == null ? widget.child : _DotsHandover(shown: dots.shown, progress: t, child: widget.child);
+    return FadeTransition(opacity: _fade ? t : kAlwaysCompleteAnimation, child: _rise ? _Rise(t, child: row) : row);
   }
+}
+
+/// The typing dots a reply's first row takes over: how much of them showed,
+/// and the reply's fade, which they fade out against.
+class _DotsHandover extends InheritedWidget {
+  const _DotsHandover({required this.shown, required this.progress, required super.child});
+  final double shown;
+  final Animation<double> progress;
+
+  @override
+  bool updateShouldNotify(_DotsHandover old) => false;
 }
 
 class _Rise extends AnimatedWidget {
@@ -2006,13 +2188,16 @@ class _Rise extends AnimatedWidget {
 /// through it); with less motion asked for it plays, as Intercom's does
 /// (see [fullTime]).
 class _TypingSlot extends StatefulWidget {
-  const _TypingSlot({required this.author, required this.replies});
+  const _TypingSlot({required this.author, required this.replies, this.first = false});
 
   /// Who is typing; null while nobody is.
   final TypingAuthor? author;
 
   /// Everyone else's messages so far: one more is the reply.
   final int replies;
+
+  /// The first row of the thread: no room above it.
+  final bool first;
 
   static const open = Duration(milliseconds: 200);
   static const hold = Duration(milliseconds: 600);
@@ -2088,7 +2273,7 @@ class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderState
   @override
   Widget build(BuildContext context) {
     final who = _who;
-    final row = who == null ? null : _TypingRow(author: who);
+    final row = who == null ? null : _TypingRow(author: who, first: widget.first);
     return AnimatedBuilder(
       animation: _open,
       builder: (_, __) {
@@ -2108,93 +2293,117 @@ class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderState
   }
 }
 
-/// The dots, beside whoever is typing: the teammate's photo (their initial
-/// without one), the chatbot's circle for the workflow, and a plain person
-/// from a server that does not say who.
-class _TypingRow extends StatefulWidget {
-  const _TypingRow({required this.author});
+/// The dots, beside whoever is typing, in the column the team's faces use
+/// (so a reply that takes their place shows the face where it was): the
+/// teammate's photo (their initial without one), the chatbot's circle for
+/// the workflow, and a plain person from a server that does not say who.
+class _TypingRow extends StatelessWidget {
+  const _TypingRow({required this.author, this.first = false});
   final TypingAuthor author;
 
-  @override
-  State<_TypingRow> createState() => _TypingRowState();
-}
-
-class _TypingRowState extends State<_TypingRow> with SingleTickerProviderStateMixin {
-  late final AnimationController _anim = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat();
-
-  @override
-  void dispose() {
-    _anim.dispose();
-    super.dispose();
-  }
-
-  double _lift(double t) {
-    // 0 → 30% up, 30% → 60% down, then still: the web messenger's bounce.
-    if (t < 0.3) return t / 0.3;
-    if (t < 0.6) return 1 - (t - 0.3) / 0.3;
-    return 0;
-  }
+  /// The first row of the thread: no room above it.
+  final bool first;
 
   @override
   Widget build(BuildContext context) {
-    final who = widget.author;
+    final who = author;
     final name = who.name;
     final Widget face;
     if (who.isBot) {
-      face = LogoAvatar(label: context.messenger.session?.productLabel ?? '', size: 22);
+      face = LogoAvatar(label: context.messenger.session?.productLabel ?? '', size: _faceSize);
     } else if (who.id != null) {
       // The photo their replies show; their initial when they have none.
-      face = PersonAvatar(name: name ?? '', photoPath: _teammatePhoto(who.id), size: 22);
+      face = PersonAvatar(name: name ?? '', photoPath: _teammatePhoto(who.id), size: _faceSize);
     } else {
-      face = const InitialAvatar(label: '', size: 22, icon: Icons.person_outline);
+      face = const InitialAvatar(label: '', size: _faceSize, icon: Icons.person_outline);
     }
     return Semantics(
       label: name == null || who.isBot ? 'Typing' : '$name is typing',
       child: Padding(
-        padding: const EdgeInsets.only(top: 4, bottom: 6),
+        padding: EdgeInsets.only(top: first ? 0 : _groupGap),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             // The label says who: the initial would only repeat it.
-            ExcludeSemantics(child: face),
-            const SizedBox(width: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              decoration: const BoxDecoration(
-                color: Palette.agentBubble,
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(18),
-                  topRight: Radius.circular(18),
-                  bottomRight: Radius.circular(18),
-                  bottomLeft: Radius.circular(4),
-                ),
-              ),
-              child: AnimatedBuilder(
-                animation: _anim,
-                builder: (_, __) => Row(
-                  children: [
-                    for (var i = 0; i < 3; i++)
-                      Builder(builder: (_) {
-                        final lift = _lift((_anim.value - i * 0.125) % 1.0);
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 2),
-                          child: Transform.translate(
-                            offset: Offset(0, -4 * lift),
-                            child: Opacity(
-                              opacity: 0.4 + 0.6 * lift,
-                              child: Container(width: 6, height: 6, decoration: const BoxDecoration(color: Palette.faint, shape: BoxShape.circle)),
-                            ),
-                          ),
-                        );
-                      }),
-                  ],
-                ),
-              ),
-            ),
+            ExcludeSemantics(child: SizedBox(width: _faceSize, height: _faceSize, child: face)),
+            const SizedBox(width: _faceColumn - _faceSize),
+            const _DotsBubble(),
           ],
         ),
       ),
     );
   }
+}
+
+/// Three dots in a bubble one line of a message tall — a one-line reply
+/// takes its place exactly. Each dot is 8 points, 4 apart, and fades from
+/// full to 30% and back every 1200 ms, 200 ms after the one before.
+class _DotsBubble extends StatefulWidget {
+  const _DotsBubble();
+
+  static const dot = 8.0;
+  static const apart = 4.0;
+  static const period = Duration(milliseconds: 1200);
+  static const after = Duration(milliseconds: 200);
+
+  @override
+  State<_DotsBubble> createState() => _DotsBubbleState();
+}
+
+class _DotsBubbleState extends State<_DotsBubble> with SingleTickerProviderStateMixin {
+  late final AnimationController _beat = AnimationController(vsync: this, duration: _DotsBubble.period)..repeat();
+
+  @override
+  void dispose() {
+    _beat.dispose();
+    super.dispose();
+  }
+
+  /// 1 at the start of a beat, 0.3 half-way, 1 again at its end.
+  static double _opacity(double t) => 0.3 + 0.7 * (0.5 + 0.5 * math.cos(2 * math.pi * t));
+
+  @override
+  Widget build(BuildContext context) {
+    final lag = _DotsBubble.after.inMilliseconds / _DotsBubble.period.inMilliseconds;
+    return _BubbleBox(
+      mine: false,
+      children: [
+        Stack(
+          alignment: Alignment.centerLeft,
+          children: [
+            // One line of a message: the bubble's height at any text size.
+            const ExcludeSemantics(child: Opacity(opacity: 0, child: Text('Hg', style: TextStyle(fontSize: 15, height: 1.45)))),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < 3; i++) ...[
+                  if (i > 0) const SizedBox(width: _DotsBubble.apart),
+                  FadeTransition(
+                    opacity: _beat.drive(_Beat(i * lag)),
+                    child: Container(
+                      width: _DotsBubble.dot,
+                      height: _DotsBubble.dot,
+                      decoration: const BoxDecoration(color: Palette.muted, shape: BoxShape.circle),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// One dot's beat: [_DotsBubbleState._opacity], [lag] of a beat late. (Not
+/// a Curve: a curve must start at 0 and end at 1.)
+class _Beat extends Animatable<double> {
+  const _Beat(this.lag);
+  final double lag;
+
+  @override
+  double transform(double t) => _DotsBubbleState._opacity((t - lag) % 1.0);
 }
 
 // ==========================================================================

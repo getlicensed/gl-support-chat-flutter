@@ -133,7 +133,7 @@ void thread(TargetPlatform platform, Phone phone) {
     final face = tester.getRect(find.descendant(of: dotsRow, matching: find.byType(ClipOval)).first);
     channel.server('message:created', msg('r2', 'agent', 'Back with you: it is on its way.', at: now()));
     // The dots that fade out over the reply: drawn, not heard.
-    final ghost = find.descendant(of: threadList(), matching: find.byWidgetPredicate((w) => w is Opacity && w.child.runtimeType.toString() == '_TypingRow'), skipOffstage: false);
+    final ghost = find.descendant(of: threadList(), matching: find.byWidgetPredicate((w) => w is Opacity && w.child.runtimeType.toString() == '_DotsBubble'), skipOffstage: false);
     final reply = inThread('Back with you');
     final seen = <(double, double)>[];
     for (var i = 0; i < 12; i++) {

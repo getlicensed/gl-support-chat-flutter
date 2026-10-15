@@ -311,16 +311,13 @@ void main() {
       expect(contrast(paragraphColor(tester, find.text("We can't open the chat right now")), Colors.white), greaterThanOrEqualTo(4.5));
     });
 
-    testWidgets('names, times and ticks read at 4.5:1 or better', (tester) async {
+    testWidgets('names, times and "Seen" read at 4.5:1 or better', (tester) async {
       await openThread(tester, messages: <Map<String, dynamic>>[
         msg('a', 'agent', 'Your card is in the post.', at: later(0)),
         msg('b', 'visitor', 'Thank you!', at: later(1)),
       ]);
       expect(contrast(paragraphColor(tester, find.textContaining('Levi John ·')), Colors.white), greaterThanOrEqualTo(4.5));
-      final tick = find.byIcon(Icons.done);
-      expect(contrast(tester.widget<Icon>(tick).color!, Colors.white), greaterThanOrEqualTo(4.5));
-      final time = find.descendant(of: find.ancestor(of: tick, matching: find.byType(Row)).first, matching: find.byType(Text));
-      expect(contrast(paragraphColor(tester, time), Colors.white), greaterThanOrEqualTo(4.5));
+      expect(contrast(paragraphColor(tester, find.textContaining('Not seen yet ·')), Colors.white), greaterThanOrEqualTo(4.5));
       // The header's status line, on the brand colour (#1F6FEB here). The
       // server says who is online as the connection comes up.
       channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 1});

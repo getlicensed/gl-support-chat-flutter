@@ -167,7 +167,7 @@ void motion({required bool lessMotion}) {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
       expect(find.text('Sending…'), findsNothing);
-      expect(find.byIcon(Icons.done), findsNWidgets(2), reason: 'delivered, as the first one was');
+      expect(find.textContaining('Not seen yet ·'), findsOneWidget, reason: 'delivered: said under the last of their messages alone (0.4.8)');
       expect(shownOf(tester, 'Thank you'), 1, reason: 'the confirmed copy is simply there, in the same place');
     });
 

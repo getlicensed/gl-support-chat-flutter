@@ -117,6 +117,15 @@ void main() {
     expect(shortAgo(DateTime(2025, 9, 1), now), '1 Sep 2025');
   });
 
+  test('how long ago, under the thread\'s bubbles: "Just now", then as the list', () {
+    final now = DateTime(2026, 10, 6, 15);
+    expect(agoLabel(now.subtract(const Duration(seconds: 59)), now), 'Just now');
+    expect(agoLabel(now.add(const Duration(seconds: 3)), now), 'Just now', reason: "the server's clock a little ahead of the phone's");
+    expect(agoLabel(now.subtract(const Duration(seconds: 61)), now), '1m');
+    expect(agoLabel(now.subtract(const Duration(minutes: 2)), now), '2m');
+    expect(agoLabel(now.subtract(const Duration(hours: 3)), now), '3h');
+  });
+
   test('brand colours: the website messenger’s formulas', () {
     final b = BrandColors('#6366F1');
     expect(b.hex, '#6366f1');

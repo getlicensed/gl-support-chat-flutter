@@ -789,7 +789,7 @@ void frames({required bool lessMotion}) {
       final after = <(double, double)>[];
       for (var i = 0; i < 14; i++) {
         await tester.pump(frame);
-        after.add((opacityOf(tester, sending), opacityOf(tester, find.byIcon(Icons.done).last)));
+        after.add((opacityOf(tester, sending), opacityOf(tester, find.textContaining('Not seen yet').last)));
       }
       expect(row, findsWidgets, reason: 'the same row, now the server\'s copy');
       expect(find.byKey(const ValueKey<String>('msg:sent-1')), findsNothing);

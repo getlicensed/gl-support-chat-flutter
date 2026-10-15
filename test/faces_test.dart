@@ -68,7 +68,7 @@ void main() {
       expect(image.fit, BoxFit.cover, reason: 'a real avatar fills its circle');
     }
     for (final box in tester.widgetList<ClipOval>(inCircles(find.byType(ClipOval)))) {
-      expect(tester.getSize(find.byWidget(box)).width, anyOf(22, 34), reason: 'the picture is the whole circle, no ring of padding');
+      expect(tester.getSize(find.byWidget(box)).width, anyOf(28, 34), reason: 'the picture is the whole circle, no ring of padding');
     }
     expect(circles(tester).where(onWhite), isEmpty, reason: 'never on white');
   });

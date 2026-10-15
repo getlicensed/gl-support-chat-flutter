@@ -64,7 +64,7 @@ void main() {
     await settle(tester);
     expect(channel.requests.last.$1, 'visitor:message');
     expect(channel.requests.last.$2['body'], 'How do I renew my licence?');
-    expect(find.byIcon(Icons.done), findsOneWidget, reason: 'their message, delivered');
+    expect(find.textContaining('Not seen yet ·'), findsOneWidget, reason: 'their message, delivered');
   });
 
   testWidgets('typing and sending from the composer', (tester) async {
@@ -80,10 +80,10 @@ void main() {
     channel.server('message:created', msg('m2', 'agent', 'Sorry about that — sending another now.'));
     await tester.pump();
     expect(find.text('Sorry about that — sending another now.'), findsOneWidget);
-    expect(find.textContaining('Levi John ·'), findsOneWidget, reason: 'the agent’s name and time above their reply');
+    expect(find.textContaining('Levi John ·'), findsOneWidget, reason: 'the agent’s name and time under their reply');
   });
 
-  testWidgets('a refused message says why, with Try again', (tester) async {
+  testWidgets('a refused message says why, with Retry', (tester) async {
     await open(tester);
     await tester.tap(find.text('Send us a message'));
     await settle(tester);
@@ -93,7 +93,8 @@ void main() {
     await tester.tap(find.bySemanticsLabel('Send'));
     await settle(tester);
     expect(find.text("You're sending messages very quickly — wait 9s and try again."), findsOneWidget);
-    expect(find.text('Try again'), findsOneWidget);
+    expect(find.text('Failed to send ·'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
   });
 
   testWidgets('workflow buttons under the live question; no composer until typing is allowed', (tester) async {
