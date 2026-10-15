@@ -39,11 +39,15 @@ class _ConversationPageState extends State<ConversationPage> {
   /// The controller's [MessengerController.resets] when this opened.
   int _resets = 0;
 
+  /// The rows as last built: one whose message has not changed is the same
+  /// widget again, which Flutter does not rebuild.
+  final _cache = _RowCache();
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_controller != null) return;
-    final c = context.messenger;
+    final c = MessengerScope.read(context);
     _controller = c;
     _resets = c.resets;
     if (_live) {
@@ -73,7 +77,7 @@ class _ConversationPageState extends State<ConversationPage> {
 
   void _reloadPast() {
     setState(() {
-      _past = context.messenger.loadConversation(widget.conversationId!);
+      _past = MessengerScope.read(context).loadConversation(widget.conversationId!);
     });
   }
 
@@ -86,116 +90,160 @@ class _ConversationPageState extends State<ConversationPage> {
     _sending = List<OutgoingMessage>.of(c.outgoing);
   }
 
+  /// The live thread, built again whenever the controller changes: the
+  /// rows come from [_cache], so only those whose message changed are built.
+  Widget _liveThread(BuildContext context, MessengerController c) {
+    _handOverPhotos(c);
+    // What came in live is drawn this frame, faded in. After it, it is no
+    // longer arriving: a rebuild, or a scroll back to it, shows it as it is.
+    final drawn = c.arriving;
+    if (drawn.isNotEmpty) WidgetsBinding.instance.addPostFrameCallback((_) => c.settleArrivals(drawn));
+    var mine = c.outgoing.length;
+    for (final m in c.live) {
+      if (m.fromVisitor) mine++;
+    }
+    // The first open shows Home before the open conversation is in: a
+    // spinner until it is, never the opening chips flashing before it;
+    // then the thread fades in over it.
+    return _FadeSwitch(
+      child: !c.liveLoaded && c.live.isEmpty && c.outgoing.isEmpty
+          ? const Center(key: ValueKey<String>('loading'), child: CircularProgressIndicator())
+          : _Thread(
+              key: const ValueKey<String>('thread'),
+              rows: _liveRows(context, c, _cache),
+              sent: mine,
+              received: c.live.length + c.outgoing.length - mine,
+              // With less motion asked for too, as Intercom's: see [fullTime].
+              glide: drawn.isNotEmpty,
+            ),
+    );
+  }
+
+  Widget _pastThread(BuildContext context, MessengerController c) {
+    final id = widget.conversationId!;
+    return FutureBuilder<ConversationDetail>(
+      future: _past,
+      // Opened before: what it said then, at once, while it refreshes.
+      initialData: c.cachedConversation(id),
+      builder: (context, snap) {
+        final d = snap.data ?? c.cachedConversation(id);
+        final Widget shown;
+        if (d != null) {
+          // The rows know the chatbot's name and colour: built again if those change.
+          shown = MessengerSelector<(String, MessengerSession?)>(
+            key: const ValueKey<String>('thread'),
+            select: (c) => (c.brand.hex, c.session),
+            builder: (context, _) => _Thread(rows: _messageRows(context, c, d.messages.where((m) => !m.isSystem).toList(), _cache, agentSeenAt: d.agentLastSeenAt)),
+          );
+        } else if (snap.hasError) {
+          shown = Center(
+            key: const ValueKey<String>('error'),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('This conversation could not be loaded.', style: TextStyle(color: Palette.muted)),
+                TextButton(onPressed: _reloadPast, child: const Text('Try again')),
+              ],
+            ),
+          );
+        } else {
+          shown = const Center(key: ValueKey<String>('loading'), child: CircularProgressIndicator());
+        }
+        return _FadeSwitch(child: shown);
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final c = context.messenger;
-    // Read here, above the Scaffold: inside it the keyboard is already taken
-    // out of the insets.
-    final keyboard = MediaQuery.viewInsetsOf(context).bottom;
-    // A phone with the keyboard up has little room left for the thread; one
-    // on its side, almost none.
-    final room = MediaQuery.sizeOf(context).height - keyboard;
-    final cramped = keyboard > 0 && room < 600;
-    final tight = keyboard > 0 && room < 300;
-    final Widget thread;
-    if (_live) {
-      _handOverPhotos(c);
-      // What came in live is drawn this frame, faded in. After it, it is no
-      // longer arriving: a rebuild, or a scroll back to it, shows it as it is.
-      final drawn = c.arriving;
-      if (drawn.isNotEmpty) WidgetsBinding.instance.addPostFrameCallback((_) => c.settleArrivals(drawn));
-      var mine = c.outgoing.length;
-      for (final m in c.live) {
-        if (m.fromVisitor) mine++;
-      }
-      // The first open shows Home before the open conversation is in: a
-      // spinner until it is, never the opening chips flashing before it;
-      // then the thread fades in over it.
-      thread = _FadeSwitch(
-        child: !c.liveLoaded && c.live.isEmpty && c.outgoing.isEmpty
-            ? const Center(key: ValueKey<String>('loading'), child: CircularProgressIndicator())
-            : _Thread(
-                key: const ValueKey<String>('thread'),
-                rows: _liveRows(context, c),
-                sent: mine,
-                received: c.live.length + c.outgoing.length - mine,
-                // With less motion asked for too, as Intercom's: see [fullTime].
-                glide: drawn.isNotEmpty,
-              ),
-      );
-    } else {
-      final id = widget.conversationId!;
-      thread = FutureBuilder<ConversationDetail>(
-        future: _past,
-        // Opened before: what it said then, at once, while it refreshes.
-        initialData: c.cachedConversation(id),
-        builder: (context, snap) {
-          final d = snap.data ?? c.cachedConversation(id);
-          final Widget shown;
-          if (d != null) {
-            shown = _Thread(key: const ValueKey<String>('thread'), rows: _messageRows(context, c, d.messages.where((m) => !m.isSystem).toList(), agentSeenAt: d.agentLastSeenAt));
-          } else if (snap.hasError) {
-            shown = Center(
-              key: const ValueKey<String>('error'),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text('This conversation could not be loaded.', style: TextStyle(color: Palette.muted)),
-                  TextButton(onPressed: _reloadPast, child: const Text('Try again')),
-                ],
-              ),
-            );
-          } else {
-            shown = const Center(key: ValueKey<String>('loading'), child: CircularProgressIndicator());
-          }
-          return _FadeSwitch(child: shown);
-        },
-      );
-    }
+    // Read, not watched: the page is not built again when the controller
+    // changes, nor when the keyboard moves. The thread listens below; the
+    // header, the footer and the composer each for what they show; only the
+    // footer is told about the keyboard ([_KeyboardRoom]).
+    final c = MessengerScope.read(context);
+    final Widget thread = _live ? ListenableBuilder(listenable: c, builder: (context, _) => _liveThread(context, c)) : _pastThread(context, c);
     return _GoneOnReset(
       controller: c,
-      child: AnnotatedRegion<SystemUiOverlayStyle>(
-        value: statusBarOnBrand(c.brand),
-        child: Scaffold(
-          backgroundColor: Colors.white,
-          body: Column(
-            children: [
-              _Header(live: _live),
-              if (_live) const ConnectionBar(),
-              // Side insets (a phone on its side): clear of the notch and the
-              // rounded corners, as the header is. The footer never takes more
-              // than the room under the header: on a phone on its side with
-              // the keyboard up and a large text size, the composer gives way
-              // (and scrolls inside) rather than overflow the screen.
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, box) => Column(
-                    children: [
-                      Expanded(child: SafeArea(top: false, bottom: false, child: thread)),
-                      ConstrainedBox(
-                        constraints: BoxConstraints(maxHeight: box.maxHeight),
-                        child: SafeArea(
-                          top: false,
-                          bottom: false,
-                          child: _live
-                              ? _LiveFooter(compact: cramped, emailBar: !tight)
-                              // While the CSAT comment is being typed the footer
-                              // steps aside: the box and its Send need the room.
-                              // Kept built, so it comes back whole, not a frame
-                              // without its line.
-                              : Offstage(offstage: keyboard > 0, child: _PastFooter(conversationId: widget.conversationId!, past: _past, cached: c.cachedConversation(widget.conversationId!))),
-                        ),
+      child: _KeyboardRoom(
+        child: MessengerSelector<String>(
+          select: (c) => c.brand.hex,
+          builder: (context, _) => AnnotatedRegion<SystemUiOverlayStyle>(
+            value: statusBarOnBrand(c.brand),
+            child: Scaffold(
+              backgroundColor: Colors.white,
+              body: Column(
+                children: [
+                  _Header(live: _live),
+                  if (_live) const ConnectionBar(),
+                  // Side insets (a phone on its side): clear of the notch and the
+                  // rounded corners, as the header is. The footer never takes more
+                  // than the room under the header: on a phone on its side with
+                  // the keyboard up and a large text size, the composer gives way
+                  // (and scrolls inside) rather than overflow the screen.
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, box) => Column(
+                        children: [
+                          Expanded(child: SafeArea(top: false, bottom: false, child: thread)),
+                          ConstrainedBox(
+                            constraints: BoxConstraints(maxHeight: box.maxHeight),
+                            child: SafeArea(
+                              top: false,
+                              bottom: false,
+                              child: _live
+                                  ? const _LiveFooter()
+                                  : _PastFooter(conversationId: widget.conversationId!, past: _past, cached: c.cachedConversation(widget.conversationId!)),
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
-                ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+/// How much room the keyboard leaves, for the footer alone. Read above the
+/// Scaffold (inside it the keyboard is already taken out of the insets) by
+/// this one small widget, which is built again on every frame the keyboard
+/// moves; what is below it is not, and the footer only when one of these
+/// changes — not the thread, whose rows read the screen's size alone.
+class _KeyboardRoom extends StatelessWidget {
+  const _KeyboardRoom({required this.child});
+  final Widget child;
+
+  static _Room of(BuildContext context) => context.dependOnInheritedWidgetOfExactType<_Room>()!;
+
+  @override
+  Widget build(BuildContext context) {
+    final keyboard = MediaQuery.viewInsetsOf(context).bottom;
+    // A phone with the keyboard up has little room left for the thread; one
+    // on its side, almost none.
+    final room = MediaQuery.sizeOf(context).height - keyboard;
+    return _Room(up: keyboard > 0, cramped: keyboard > 0 && room < 600, tight: keyboard > 0 && room < 300, child: child);
+  }
+}
+
+class _Room extends InheritedWidget {
+  const _Room({required this.up, required this.cramped, required this.tight, required super.child});
+
+  /// The keyboard is up.
+  final bool up;
+
+  /// Up, on a phone: the "leave your email" form is one line.
+  final bool cramped;
+
+  /// Up, on a phone on its side: not even that line fits.
+  final bool tight;
+
+  @override
+  bool updateShouldNotify(_Room old) => up != old.up || cramped != old.cramped || tight != old.tight;
 }
 
 /// A screen with what the customer signed in now has (a conversation, a
@@ -257,18 +305,53 @@ class _GoneOnResetState extends State<_GoneOnReset> {
 // What the thread shows, top to bottom
 // ==========================================================================
 
+/// The thread's rows as last built, by key, and what each was built from.
+/// A row whose message has not changed since is the very same widget, which
+/// Flutter does not build again: a typing tick, a seen receipt or a word of
+/// an AI answer rebuilds the rows it changes, not every row on screen.
+/// Everything is built again when the chatbot's colour or session changes.
+class _RowCache {
+  var _rows = <String, ({Object? from, Widget row})>{};
+  var _next = <String, ({Object? from, Widget row})>{};
+  Object? _look;
+
+  /// Starts a pass over the rows; those not asked for in it are let go.
+  void begin(MessengerController c) {
+    final look = (c.brand.hex, c.session);
+    if (look != _look) {
+      _look = look;
+      _rows = <String, ({Object? from, Widget row})>{};
+    }
+    _next = <String, ({Object? from, Widget row})>{};
+  }
+
+  void end() {
+    _rows = _next;
+  }
+
+  Widget row(String key, Object? from, Widget Function() build) {
+    final had = _rows[key];
+    final row = had != null && had.from == from ? had.row : build();
+    _next[key] = (from: from, row: row);
+    return row;
+  }
+}
+
 /// The thread's rows, each under a key of its own (the message's id, the
 /// local id of one on its way), so a row keeps its state — a photo already
 /// fetched — when rows are added below it, instead of taking another row's.
 class _Rows {
+  _Rows(this.cache);
+  final _RowCache cache;
   final list = <Widget>[];
   final _used = <String>{};
 
   /// [message]: the row is that message's (a [ChatMessage] or an
   /// [OutgoingMessage]); it fades in if the message came in live and has
   /// not been drawn yet — with less motion asked for too, as Intercom's
-  /// does (see [fullTime]).
-  void add(String key, Widget row, {Object? message}) {
+  /// does (see [fullTime]). [from]: what the row shows, compared with what
+  /// it showed last time to tell whether it is built again.
+  void add(String key, Object? from, Widget Function() row, {Object? message}) {
     // Two rows never share a key, even if the server ever sent an id twice.
     var k = key;
     for (var n = 2; !_used.add(k); n++) {
@@ -276,89 +359,91 @@ class _Rows {
     }
     // Every row is wrapped the same way, arriving or not: the row keeps its
     // place in the tree, and its state, from one build to the next.
-    list.add(KeyedSubtree(key: ValueKey<String>(k), child: _Entrance(message: message, child: row)));
+    list.add(cache.row(k, (from, message), () => KeyedSubtree(key: ValueKey<String>(k), child: _Entrance(message: message, child: row()))));
   }
 }
 
-List<Widget> _liveRows(BuildContext context, MessengerController c) {
-  final rows = _Rows();
+List<Widget> _liveRows(BuildContext context, MessengerController c, _RowCache cache) {
+  cache.begin(c);
+  final rows = _Rows(cache);
   final label = c.session?.productLabel ?? '';
   if (c.live.isEmpty) {
     final pendingCsat = c.pendingCsatRatingId;
     if (pendingCsat != null) {
-      rows.add('csat-pending:$pendingCsat', CsatCard(
-        ratingId: pendingCsat,
-        title: label.isEmpty ? 'How did we do? Rate your last conversation.' : 'How did we do? Rate your last conversation with $label.',
-      ));
+      final title = label.isEmpty ? 'How did we do? Rate your last conversation.' : 'How did we do? Rate your last conversation with $label.';
+      rows.add('csat-pending:$pendingCsat', title, () => CsatCard(ratingId: pendingCsat, title: title));
     }
     final preview = c.preview;
     if (preview != null) {
-      rows.add('preview-author', _AuthorRow(authorType: 'bot', name: label, time: c.previewShownAt ?? DateTime.now()));
+      final shownAt = c.previewShownAt;
+      rows.add('preview-author', (preview, shownAt), () => _AuthorRow(authorType: 'bot', name: label, time: shownAt ?? DateTime.now()));
       for (var i = 0; i < preview.messages.length; i++) {
         final m = preview.messages[i];
         final meta = m.meta;
         if (m.body.trim().isNotEmpty || meta?.imageUrl != null || meta?.articleSlug != null || meta?.fileUrl != null) {
-          rows.add('preview:$i', _Bubble(
-            message: ChatMessage(id: '', conversationId: '', body: m.body, authorType: 'bot', createdAt: DateTime.now(), meta: meta),
-          ));
+          rows.add('preview:$i', m, () => _Bubble(
+                message: ChatMessage(id: '', conversationId: '', body: m.body, authorType: 'bot', createdAt: DateTime.now(), meta: meta),
+              ));
         }
         if (meta != null && meta.buttons.isNotEmpty) {
-          rows.add('preview-buttons:$i', _FlowButtons(buttons: meta.buttons, onTap: c.startWorkflow));
+          rows.add('preview-buttons:$i', m, () => _FlowButtons(buttons: meta.buttons, onTap: c.startWorkflow));
         }
       }
     } else if (c.typingAuthor != null) {
-      rows.add('typing', _TypingSlot(author: c.typingAuthor, replies: 0));
+      final author = c.typingAuthor;
+      rows.add('typing', (author, 0), () => _TypingSlot(author: author, replies: 0));
     } else {
-      rows.add('intro', const _IntroAndChips());
+      // The chips fall back to the top articles: built again when those come.
+      rows.add('intro', c.articles, () => _IntroAndChips(chips: c.chips));
     }
   } else {
-    _messageRows(context, c, c.live, agentSeenAt: c.agentSeenAt, divider: c.dividerIndex, livePrompt: c.livePrompt, into: rows);
+    _messageRows(context, c, c.live, cache, agentSeenAt: c.agentSeenAt, divider: c.dividerIndex, livePrompt: c.livePrompt, into: rows);
     // Always there, empty while nobody types: it opens and closes in place.
     var replies = 0;
     for (final m in c.live) {
       if (!m.fromVisitor) replies++;
     }
-    rows.add('typing', _TypingSlot(author: c.typingAuthor, replies: replies));
+    final author = c.typingAuthor;
+    rows.add('typing', (author, replies), () => _TypingSlot(author: author, replies: replies));
   }
   final notice = c.flowNotice;
-  if (notice != null) rows.add('notice', _ErrorLine(notice));
+  if (notice != null) rows.add('notice', notice, () => _ErrorLine(notice));
   for (final out in c.outgoing) {
     // Its copy from the server is in the thread already, in this row.
     if (c.isTakenOver(out)) continue;
-    rows.add('out:${out.localId}', _MineRow(out: out), message: out);
+    rows.add('out:${out.localId}', (out.error, out.image), () => _MineRow(out: out), message: out);
   }
+  cache.end();
   return rows.list;
 }
 
 List<Widget> _messageRows(
   BuildContext context,
   MessengerController c,
-  List<ChatMessage> messages, {
+  List<ChatMessage> messages,
+  _RowCache cache, {
   DateTime? agentSeenAt,
   int divider = -1,
   ChatMessage? livePrompt,
   _Rows? into,
 }) {
-  final rows = into ?? _Rows();
-  final label = c.session?.productLabel ?? '';
   final live = into != null;
+  if (!live) cache.begin(c);
+  final rows = into ?? _Rows(cache);
+  final label = c.session?.productLabel ?? '';
   for (var i = 0; i < messages.length; i++) {
     final m = messages[i];
-    if (i == divider) rows.add('divider', const _NewMessagesDivider());
+    if (i == divider) rows.add('divider', null, () => const _NewMessagesDivider());
     if (!m.fromVisitor) {
       final prev = i == 0 ? null : messages[i - 1];
       final startsGroup = prev == null || prev.fromVisitor || prev.authorType != m.authorType || prev.authorName != m.authorName;
       if (startsGroup) {
-        rows.add('author:${m.id}', _AuthorRow(
-          authorType: m.authorType,
-          name: switch (m.authorType) {
-            'bot' => label.isNotEmpty ? label : (m.authorName ?? 'Support'),
-            'ai' => m.authorName ?? 'AI',
-            _ => m.authorName ?? 'Support',
-          },
-          time: m.createdAt,
-          authorId: m.authorId,
-        ), message: m);
+        final name = switch (m.authorType) {
+          'bot' => label.isNotEmpty ? label : (m.authorName ?? 'Support'),
+          'ai' => m.authorName ?? 'AI',
+          _ => m.authorName ?? 'Support',
+        };
+        rows.add('author:${m.id}', (m.authorType, name, m.createdAt, m.authorId), () => _AuthorRow(authorType: m.authorType, name: name, time: m.createdAt, authorId: m.authorId), message: m);
       }
     }
     final meta = m.meta;
@@ -368,24 +453,26 @@ List<Widget> _messageRows(
       if (m.fromVisitor) {
         // Written here: the row it was drawn in while on its way.
         final local = live ? c.sentAs(m) : null;
-        rows.add(local != null ? 'out:$local' : 'msg:${m.id}', _MineRow(
-          message: m,
-          seen: agentSeenAt != null && !m.createdAt.isAfter(agentSeenAt),
-        ), message: m);
+        // Live, its tick listens for the team's seen receipts itself; in a
+        // past conversation it is what was fetched.
+        rows.add(local != null ? 'out:$local' : 'msg:${m.id}', (m, m.id, m.body, live ? null : agentSeenAt),
+            () => _MineRow(message: m, seenAt: live ? null : agentSeenAt, live: live), message: m);
       } else {
-        rows.add('msg:${m.id}', _Bubble(message: m), message: m);
+        // The id and the words: an AI answer types out into the same message.
+        rows.add('msg:${m.id}', (m, m.id, m.body), () => _Bubble(message: m), message: m);
       }
     }
     final csat = meta?.csatRatingId;
-    if (m.authorType == 'bot' && csat != null) rows.add('csat:${m.id}', CsatCard(ratingId: csat, title: 'Tap a face'), message: m);
+    if (m.authorType == 'bot' && csat != null) rows.add('csat:${m.id}', csat, () => CsatCard(ratingId: csat, title: 'Tap a face'), message: m);
     if (livePrompt != null && identical(m, livePrompt)) {
       if (meta!.buttons.isNotEmpty) {
-        rows.add('buttons:${m.id}', _FlowButtons(buttons: meta.buttons, onTap: (b) => c.choose(m, b)), message: m);
+        rows.add('buttons:${m.id}', m, () => _FlowButtons(buttons: meta.buttons, onTap: (b) => c.choose(m, b)), message: m);
       } else if (meta.collect != null) {
-        rows.add('collect:${m.id}', _CollectBox(prompt: m, request: meta.collect!), message: m);
+        rows.add('collect:${m.id}', m, () => _CollectBox(prompt: m, request: meta.collect!), message: m);
       }
     }
   }
+  if (!live) cache.end();
   return rows.list;
 }
 
@@ -870,7 +957,12 @@ class _Header extends StatelessWidget {
   final bool live;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => MessengerSelector<(String, MessengerSession?, int?, bool)>(
+        select: (c) => (c.brand.hex, c.session, c.agentsOnline, c.connected),
+        builder: (context, _) => _bar(context),
+      );
+
+  Widget _bar(BuildContext context) {
     final c = context.messenger;
     final brand = c.brand;
     final s = c.session;
@@ -878,7 +970,7 @@ class _Header extends StatelessWidget {
     // (agentsOnline is null then), so the line says "Active now" only once
     // the connection is up and the server has said someone is.
     final status = presenceLines(c.agentsOnline, s?.officeHours);
-    final hasTeam = (s?.team ?? const []).isNotEmpty;
+    final team = s?.team ?? const <TeamFace>[];
     return Container(
       decoration: BoxDecoration(
         gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [brand.primary, brand.hover]),
@@ -895,7 +987,8 @@ class _Header extends StatelessWidget {
               RoundIconButton(icon: Icons.chevron_left, tooltip: 'Back', light: true, size: 32, onTap: () => Navigator.of(context).maybePop()),
               const SizedBox(width: 4),
               // The faces the admin chose (or none): then the chatbot's logo.
-              if (hasTeam) const TeamFaces(size: 30, border: 1.5) else LogoAvatar(label: s?.productLabel ?? '?', size: 34),
+              // The team given, not read: built again only with the session.
+              if (team.isNotEmpty) TeamFaces(size: 30, border: 1.5, team: team) else LogoAvatar(label: s?.productLabel ?? '?', size: 34),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -943,29 +1036,31 @@ class _Header extends StatelessWidget {
 }
 
 class _LiveFooter extends StatelessWidget {
-  const _LiveFooter({this.compact = false, this.emailBar = true});
-
-  /// The keyboard is up on a phone: the "leave your email" form is one line.
-  final bool compact;
-
-  /// False when even that line would not fit (a phone on its side, typing):
-  /// the form is there again once the keyboard goes down.
-  final bool emailBar;
+  const _LiveFooter();
 
   @override
   Widget build(BuildContext context) {
-    final c = context.messenger;
-    final sendError = c.sendError;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Reveal(shown: c.showEmailBar && emailBar, child: _EmailBar(compact: compact)),
-        if (sendError != null && c.outgoing.isEmpty)
-          Padding(padding: const EdgeInsets.fromLTRB(16, 6, 16, 0), child: _ErrorLine(sendError)),
-        // Flexible: in the little room of a phone on its side it is the
-        // composer that gives way.
-        const Flexible(child: _Composer()),
-      ],
+    final room = _KeyboardRoom.of(context);
+    return MessengerSelector<(bool, String?, bool, String?, MessengerSession?, String)>(
+      select: (c) => (c.showEmailBar, c.sendError, c.outgoing.isEmpty, c.emailSavedFor, c.session, c.brand.hex),
+      builder: (context, _) {
+        final c = context.messenger;
+        final sendError = c.sendError;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // With the keyboard up on a phone the "leave your email" form is
+            // one line; on its side, not even that (it is there again once
+            // the keyboard goes down).
+            Reveal(shown: c.showEmailBar && !room.tight, child: _EmailBar(compact: room.cramped)),
+            if (sendError != null && c.outgoing.isEmpty)
+              Padding(padding: const EdgeInsets.fromLTRB(16, 6, 16, 0), child: _ErrorLine(sendError)),
+            // Flexible: in the little room of a phone on its side it is the
+            // composer that gives way.
+            const Flexible(child: _Composer()),
+          ],
+        );
+      },
     );
   }
 }
@@ -979,14 +1074,22 @@ class _PastFooter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final brand = context.brand;
-    return FutureBuilder<ConversationDetail>(
-      future: past,
-      initialData: cached,
-      builder: (context, snap) {
-        final closed = (snap.data ?? cached)?.open == false;
-        return Container(
+    // While the CSAT comment is being typed the footer steps aside: the box
+    // and its Send need the room. Kept built, so it comes back whole, not a
+    // frame without its line.
+    return Offstage(
+      offstage: _KeyboardRoom.of(context).up,
+      child: FutureBuilder<ConversationDetail>(
+        future: past,
+        initialData: cached,
+        builder: (context, snap) => _footer(context, brand, (snap.data ?? cached)?.open == false),
+      ),
+    );
+  }
+
+  Widget _footer(BuildContext context, BrandColors brand, bool closed) => Container(
           width: double.infinity,
-          padding: EdgeInsets.fromLTRB(16, 14, 16, 14 + MediaQuery.of(context).padding.bottom),
+          padding: EdgeInsets.fromLTRB(16, 14, 16, 14 + MediaQuery.paddingOf(context).bottom),
           decoration: const BoxDecoration(color: Palette.input, border: Border(top: BorderSide(color: Palette.border))),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1005,9 +1108,6 @@ class _PastFooter extends StatelessWidget {
             ],
           ),
         );
-      },
-    );
-  }
 }
 
 // ==========================================================================
@@ -1016,7 +1116,7 @@ class _PastFooter extends StatelessWidget {
 
 String _clock(BuildContext context, DateTime t) {
   final loc = MaterialLocalizations.of(context);
-  final time = loc.formatTimeOfDay(TimeOfDay.fromDateTime(t), alwaysUse24HourFormat: MediaQuery.of(context).alwaysUse24HourFormat);
+  final time = loc.formatTimeOfDay(TimeOfDay.fromDateTime(t), alwaysUse24HourFormat: MediaQuery.alwaysUse24HourFormatOf(context));
   final now = DateTime.now();
   final today = t.year == now.year && t.month == now.month && t.day == now.day;
   return today ? time : '${loc.formatShortMonthDay(t)} $time';
@@ -1208,7 +1308,7 @@ class _BubbleBox extends StatelessWidget {
   Widget build(BuildContext context) {
     final brand = context.brand;
     return Container(
-      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+      constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.78),
       padding: tight ? const EdgeInsets.all(3) : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: mine ? brand.primary : Palette.agentBubble,
@@ -1231,14 +1331,20 @@ class _BubbleBox extends StatelessWidget {
 /// under it fades from one to the next. The bubble is whole at once: never
 /// dimmed while it goes.
 class _MineRow extends StatelessWidget {
-  const _MineRow({this.message, this.out, this.seen = false}) : assert((message == null) != (out == null));
+  const _MineRow({this.message, this.out, this.seenAt, this.live = false}) : assert((message == null) != (out == null));
 
   /// The server's copy, once there is one.
   final ChatMessage? message;
 
   /// The message on its way, or one the server refused.
   final OutgoingMessage? out;
-  final bool seen;
+
+  /// When the team last read the conversation, in a past one.
+  final DateTime? seenAt;
+
+  /// In the live conversation: the tick follows the controller's
+  /// [MessengerController.agentSeenAt] itself.
+  final bool live;
 
   static const statusFade = Duration(milliseconds: 150);
 
@@ -1252,14 +1358,17 @@ class _MineRow extends StatelessWidget {
     final Widget status;
     if (m != null) {
       bubble = _Bubble(message: m);
+      Widget tick(bool seen) => Icon(seen ? Icons.done_all : Icons.done, size: 14, color: seen ? Palette.body : Palette.muted, semanticLabel: seen ? 'Seen' : 'Delivered');
+      bool seenBy(DateTime? at) => at != null && !m.createdAt.isAfter(at);
       status = Row(
         key: const ValueKey<String>('sent'),
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(_clock(context, m.createdAt), style: const TextStyle(fontSize: 11, color: Palette.muted)),
           const SizedBox(width: 4),
-          // ✓ delivered, ✓✓ the team has read it.
-          Icon(seen ? Icons.done_all : Icons.done, size: 14, color: seen ? Palette.body : Palette.muted, semanticLabel: seen ? 'Seen' : 'Delivered'),
+          // ✓ delivered, ✓✓ the team has read it. A seen receipt redraws
+          // the tick, not the row.
+          if (live) MessengerSelector<bool>(select: (c) => seenBy(c.agentSeenAt), builder: (_, seen) => tick(seen)) else tick(seenBy(seenAt)),
         ],
       );
     } else {
@@ -1841,12 +1950,14 @@ class _TypingRowState extends State<_TypingRow> with SingleTickerProviderStateMi
 // ==========================================================================
 
 class _IntroAndChips extends StatelessWidget {
-  const _IntroAndChips();
+  const _IntroAndChips({required this.chips});
+
+  /// The chatbot's own, else its top articles ([MessengerController.chips]).
+  final List<SuggestedQuestion> chips;
 
   @override
   Widget build(BuildContext context) {
     final c = context.messenger;
-    final chips = c.chips;
     final s = c.session;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.end,
@@ -1948,8 +2059,9 @@ class _FlowButtons extends StatelessWidget {
   final void Function(FlowButton) onTap;
 
   @override
-  Widget build(BuildContext context) {
-    final busy = context.messenger.flowBusy;
+  Widget build(BuildContext context) => MessengerSelector<bool>(select: (c) => c.flowBusy, builder: _buttons);
+
+  Widget _buttons(BuildContext context, bool busy) {
     return Padding(
       padding: const EdgeInsets.only(top: 4, bottom: 10),
       child: Column(
@@ -1990,7 +2102,9 @@ class _CollectBoxState extends State<_CollectBox> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => MessengerSelector<(bool, String?)>(select: (c) => (c.flowBusy, c.collectError), builder: (context, _) => _box(context));
+
+  Widget _box(BuildContext context) {
     final c = context.messenger;
     final brand = c.brand;
     final type = widget.request.inputType;
@@ -2079,7 +2193,16 @@ class _CsatCardState extends State<CsatCard> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => MessengerSelector<(int?, String?, String?, String?)>(
+        select: (c) {
+          // The answer is changed in place: what it says, not the object.
+          final a = c.csat[widget.ratingId];
+          return (a?.rating, a?.commentState, a?.comment, a?.error);
+        },
+        builder: (context, _) => _card(context),
+      );
+
+  Widget _card(BuildContext context) {
     final c = context.messenger;
     final brand = c.brand;
     final answer = c.csat[widget.ratingId];
@@ -2453,7 +2576,9 @@ class _ComposerState extends State<_Composer> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => MessengerSelector<(String?, String)>(select: (c) => (c.composerLock, c.brand.hex), builder: (context, _) => _box(context));
+
+  Widget _box(BuildContext context) {
     final c = context.messenger;
     final brand = c.brand;
     final lock = c.composerLock;
@@ -2469,7 +2594,7 @@ class _ComposerState extends State<_Composer> {
     // them keeps the keyboard up, as in any chat app. A tap anywhere else —
     // the thread, the header — puts it away.
     final box = Container(
-        padding: EdgeInsets.fromLTRB(8, 8, 10, 8 + MediaQuery.of(context).padding.bottom),
+        padding: EdgeInsets.fromLTRB(8, 8, 10, 8 + MediaQuery.paddingOf(context).bottom),
         decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Palette.border))),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -2560,7 +2685,7 @@ class _LockedComposer extends StatelessWidget {
     final style = (theme.useMaterial3 ? theme.textTheme.bodyLarge : theme.textTheme.titleMedium)!.merge(fieldText);
     return ExcludeFocus(
       child: Container(
-        padding: EdgeInsets.fromLTRB(8, 8, 10, 8 + MediaQuery.of(context).padding.bottom),
+        padding: EdgeInsets.fromLTRB(8, 8, 10, 8 + MediaQuery.paddingOf(context).bottom),
         decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Palette.border))),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,

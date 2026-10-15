@@ -132,6 +132,9 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
   /// The fallback screen showed at the last build.
   bool _failed = false;
 
+  /// The controller's changes, as the tabs are told of them.
+  _WhileShown? _changes;
+
   @override
   void initState() {
     super.initState();
@@ -151,7 +154,10 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _route = ModalRoute.of(context);
+    final route = _route = ModalRoute.of(context);
+    // Covered by a screen of its own (a conversation, an article): the tabs
+    // wait to be told of what changed until they show again.
+    _changes?.shown = route == null || route.isCurrent;
   }
 
   @override
@@ -174,6 +180,7 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
       ?..removeListener(_onRequest)
       .._pageGone();
     widget.controller?.detach();
+    _changes?.dispose();
     super.dispose();
   }
 
@@ -287,9 +294,16 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
   Widget build(BuildContext context) {
     final c = widget.controller;
     if (c == null) return _FallbackScreen(fallback: widget.fallback, browserUrl: widget.browserUrl);
+    var changes = _changes;
+    if (changes == null || !identical(changes.controller, c)) {
+      changes?.dispose();
+      final route = _route;
+      changes = _changes = _WhileShown(c)..shown = route == null || route.isCurrent;
+    }
     return MessengerScope(
       controller: c,
       fallback: widget.fallback,
+      changes: changes,
       child: Builder(builder: (context) {
         final controller = context.messenger;
         return Theme(
@@ -328,6 +342,51 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
         );
       }),
     );
+  }
+}
+
+/// The controller's changes, passed on to the tabs only while they show.
+/// Under a conversation they were built again at each of its changes — an
+/// AI answer typing out rebuilt Home, Messages and Help 13 times a second,
+/// out of sight. Once they show again they are told, if anything changed
+/// meanwhile. What this page itself acts on — a sign-out, the sign-in
+/// failing or done, the brand colour — is passed on at once.
+class _WhileShown extends ChangeNotifier {
+  _WhileShown(this.controller) : _key = _keyOf(controller) {
+    controller.addListener(_changed);
+  }
+
+  final MessengerController controller;
+  Object _key;
+  bool _shown = true;
+  bool _missed = false;
+
+  static Object _keyOf(MessengerController c) => (c.resets, c.phase, c.brand.hex);
+
+  set shown(bool value) {
+    if (value == _shown) return;
+    _shown = value;
+    if (value && _missed) {
+      _missed = false;
+      notifyListeners();
+    }
+  }
+
+  void _changed() {
+    final key = _keyOf(controller);
+    if (_shown || key != _key) {
+      _key = key;
+      _missed = false;
+      notifyListeners();
+    } else {
+      _missed = true;
+    }
+  }
+
+  @override
+  void dispose() {
+    controller.removeListener(_changed);
+    super.dispose();
   }
 }
 

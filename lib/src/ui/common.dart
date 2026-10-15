@@ -17,24 +17,105 @@ const messengerRoutePrefix = 'gl_support_chat';
 
 /// What every messenger screen needs: the controller, the app's fallback
 /// contacts, and how to reach the API for pictures.
-class MessengerScope extends InheritedNotifier<MessengerController> {
-  const MessengerScope({super.key, required MessengerController controller, required this.fallback, required super.child})
-      : super(notifier: controller);
+class MessengerScope extends InheritedNotifier<Listenable> {
+  /// [changes]: when the screens below are told the controller changed —
+  /// every time it does, unless given (see the messenger page's tabs).
+  const MessengerScope({super.key, required this.controller, required this.fallback, Listenable? changes, required super.child})
+      : super(notifier: changes ?? controller);
 
+  final MessengerController controller;
   final GLSupportChatFallback fallback;
 
+  /// The scope; the widget asking is rebuilt whenever the controller
+  /// changes — except below a [QuietScope], where it is only read.
   static MessengerScope of(BuildContext context) {
-    final scope = context.dependOnInheritedWidgetOfExactType<MessengerScope>();
+    final quiet = context.getInheritedWidgetOfExactType<QuietScope>() != null;
+    final scope = quiet ? context.getInheritedWidgetOfExactType<MessengerScope>() : context.dependOnInheritedWidgetOfExactType<MessengerScope>();
     assert(scope != null, 'A messenger screen outside MessengerScope');
     return scope!;
   }
 
-  MessengerController get controller => notifier!;
+  /// The controller, read without being rebuilt when it changes: for a
+  /// widget that listens for what it shows itself ([MessengerSelector]), or
+  /// that only acts on it.
+  static MessengerController read(BuildContext context) {
+    final scope = context.getInheritedWidgetOfExactType<MessengerScope>();
+    assert(scope != null, 'A messenger screen outside MessengerScope');
+    return scope!.controller;
+  }
+
 }
 
 extension MessengerContext on BuildContext {
   MessengerController get messenger => MessengerScope.of(this).controller;
   BrandColors get brand => MessengerScope.of(this).controller.brand;
+}
+
+/// Below this, [MessengerContext] reads the controller without subscribing
+/// to it: the thread's rows. The controller tells its listeners of every
+/// change — an AI answer typing out, 13 times a second; a teammate typing;
+/// someone coming online — and every row that had asked it for the brand
+/// colour was rebuilt each time. A row is now rebuilt by the thread, when
+/// its own message changes; what a row shows that changes on its own (a
+/// face chosen, a button busy) listens for that alone ([MessengerSelector]).
+class QuietScope extends InheritedWidget {
+  const QuietScope({super.key, required super.child});
+
+  @override
+  bool updateShouldNotify(QuietScope oldWidget) => false;
+}
+
+/// A part of a screen rebuilt when what [select] takes from the controller
+/// changes, and only then: not for everything else the controller does, and
+/// without rebuilding the rest of the screen. [select] returns a value that
+/// compares equal while nothing it shows has changed (a record of them).
+///
+/// What [builder] builds is in a [QuietScope]: it reads the controller and
+/// is rebuilt with this, so [select] names everything it shows.
+class MessengerSelector<T> extends StatefulWidget {
+  const MessengerSelector({super.key, required this.select, required this.builder});
+
+  final T Function(MessengerController c) select;
+  final Widget Function(BuildContext context, T value) builder;
+
+  @override
+  State<MessengerSelector<T>> createState() => _MessengerSelectorState<T>();
+}
+
+class _MessengerSelectorState<T> extends State<MessengerSelector<T>> {
+  MessengerController? _c;
+  late T _value;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final c = MessengerScope.read(context);
+    if (identical(c, _c)) return;
+    _c?.removeListener(_changed);
+    _c = c..addListener(_changed);
+    _value = widget.select(c);
+  }
+
+  @override
+  void didUpdateWidget(MessengerSelector<T> oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _value = widget.select(_c!);
+  }
+
+  @override
+  void dispose() {
+    _c?.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    final value = widget.select(_c!);
+    if (value == _value) return;
+    setState(() => _value = value);
+  }
+
+  @override
+  Widget build(BuildContext context) => QuietScope(child: Builder(builder: (context) => widget.builder(context, _value)));
 }
 
 /// Neutral colours, the website messenger's.
@@ -379,8 +460,9 @@ class _ConnectionBarState extends State<ConnectionBar> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final link = context.messenger.link;
+  Widget build(BuildContext context) => MessengerSelector<LinkState>(select: (c) => c.link, builder: _bar);
+
+  Widget _bar(BuildContext context, LinkState link) {
     var shown = true;
     if (link == LinkState.connected) {
       _wait?.cancel();
