@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:gl_support_chat/src/messenger_page.dart';
 
 import 'support/fakes.dart';
+import 'support/gated.dart';
 
 // Not a check: renders the main screens to test/screens/*.png (gitignored)
 // with real fonts, to look at a change without a phone.
@@ -42,8 +43,9 @@ void main() {
       'title': 'How do I renew my SIA licence?',
       'description': 'Three steps, about ten minutes.',
       'html': '<p>You can renew up to <strong>four months</strong> before your licence expires.</p>'
-          '<h2>What you need</h2><ul><li>Your current licence number</li><li>A recent photo</li><li>A valid first aid certificate</li></ul>'
-          '<p>Then apply on the <a href="https://www.gov.uk/sia">SIA website</a>.</p>',
+          '<h2>What you need</h2><ul><li><p>Your current licence number<br>\u200B</p></li><li><p>A recent photo</p></li><li><p>A valid first aid certificate</p></li></ul>'
+          '<p>Then apply on the <a href="https://www.gov.uk/sia">SIA website</a>, or book your refresher with us:</p>'
+          '<p><a href="https://www.get-licensed.co.uk/">Book A Course</a></p>',
       'url': 'https://help.test/help/renew-sia',
     };
     server.openInfo = <String, dynamic>{'conversationId': 'conv-1', 'unreadCount': 0};
@@ -120,4 +122,108 @@ void main() {
     return render(t, 'new', (t) => t.tap(find.text('Send us a message')), server: s);
   }, skip: !enabled);
   testWidgets('cannot open', (t) => render(t, 'fallback', nothing, server: seeded()..authStatus = 500), skip: !enabled);
+
+  // 0.4.6: the moments in between, not only where they land.
+  Future<void> shoot(WidgetTester tester, String name) async {
+    autoUpdateGoldenFiles = true;
+    await expectLater(find.byKey(const ValueKey<String>('screen')), matchesGoldenFile('screens/$name.png'));
+    autoUpdateGoldenFiles = false;
+  }
+
+  void phone(WidgetTester tester, {double height = 844}) {
+    tester.view.devicePixelRatio = 2;
+    tester.view.physicalSize = Size(390 * 2, height * 2);
+    tester.view.viewPadding = const FakeViewPadding(top: 47 * 2, bottom: 34 * 2);
+    tester.view.padding = const FakeViewPadding(top: 47 * 2, bottom: 34 * 2);
+    addTearDown(tester.view.reset);
+  }
+
+  /// An app behind the sheet, as GuardPass would be.
+  Widget app(Widget Function(BuildContext) open) => RepaintBoundary(
+        key: const ValueKey<String>('screen'),
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(platform: TargetPlatform.iOS, fontFamily: 'Roboto', colorSchemeSeed: const Color(0xFF0B3D91)),
+          home: Builder(
+            builder: (context) => Scaffold(
+              appBar: AppBar(title: const Text('GuardPass')),
+              body: ListView(children: [
+                for (final t in <String>['My courses', 'Bookings', 'Licence', 'Jobs'])
+                  ListTile(title: Text(t), subtitle: const Text('Tap to see more'), leading: const Icon(Icons.folder_outlined)),
+                Center(child: TextButton(onPressed: () => Navigator.of(context, rootNavigator: true).push(messengerRoute(open(context), reduceMotion: false)), child: const Text('Support'))),
+              ]),
+            ),
+          ),
+        ),
+      );
+
+  testWidgets('sheet mid-open', (t) async {
+    phone(t);
+    final c = controllerFor(seeded(), FakeChannel());
+    await t.pumpWidget(app((_) => GLSupportChatPage(controller: c)));
+    await t.tap(find.text('Support'));
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 16));
+    await t.pump(const Duration(milliseconds: 40));
+    await shoot(t, 'sheet-mid-open');
+    await t.pump(const Duration(seconds: 1));
+    await shoot(t, 'sheet-up');
+  }, skip: !enabled);
+
+  testWidgets('home skeleton', (t) async {
+    phone(t);
+    final server = GatedServer.from(seeded())..hold(<String>['/widget/auth']);
+    final c = controllerFor(server, FakeChannel());
+    await t.pumpWidget(app((_) => GLSupportChatPage(controller: c)));
+    await t.tap(find.text('Support'));
+    for (var i = 0; i < 12; i++) {
+      await t.pump(const Duration(milliseconds: 60));
+    }
+    await shoot(t, 'home-skeleton');
+    server.release();
+    await t.pump();
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 100));
+    await shoot(t, 'home-skeleton-to-home');
+    await t.pump(const Duration(seconds: 1));
+  }, skip: !enabled);
+
+  testWidgets('home staggered', (t) async {
+    phone(t);
+    final c = controllerFor(seeded(), FakeChannel());
+    c.attach();
+    for (var i = 0; i < 8; i++) {
+      await t.pump(const Duration(milliseconds: 50));
+    }
+    c.detach();
+    await t.pumpWidget(RepaintBoundary(
+      key: const ValueKey<String>('screen'),
+      child: MaterialApp(debugShowCheckedModeBanner: false, home: GLSupportChatPage(controller: c)),
+    ));
+    await t.pump(const Duration(milliseconds: 16));
+    await t.pump(const Duration(milliseconds: 150));
+    await shoot(t, 'home-staggered');
+    await t.pump(const Duration(seconds: 1));
+  }, skip: !enabled);
+
+  for (final face in <String?>[null, '😞']) {
+    testWidgets('article with a button and reactions ${face ?? ''}', (t) async {
+      phone(t, height: 1300);
+      final c = controllerFor(seeded(), FakeChannel());
+      await t.pumpWidget(RepaintBoundary(
+        key: const ValueKey<String>('screen'),
+        child: MaterialApp(debugShowCheckedModeBanner: false, home: GLSupportChatPage(controller: c, screen: GLSupportChatScreen.article('renew-sia'))),
+      ));
+      for (var i = 0; i < 20; i++) {
+        await t.pump(const Duration(milliseconds: 60));
+      }
+      if (face != null) {
+        await t.tap(find.text(face));
+        for (var i = 0; i < 10; i++) {
+          await t.pump(const Duration(milliseconds: 60));
+        }
+      }
+      await shoot(t, face == null ? 'article-button-reactions' : 'article-reacted-sad');
+    }, skip: !enabled);
+  }
 }

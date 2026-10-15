@@ -13,6 +13,18 @@ import 'fakes.dart';
 /// messenger shows before anything has come back, and that the loads go out
 /// side by side.
 class GatedServer extends FakeServer {
+  GatedServer();
+
+  /// [server]'s answers, with a hand on the tap.
+  factory GatedServer.from(FakeServer server) => GatedServer()
+    ..session = server.session
+    ..openInfo = server.openInfo
+    ..conversations = server.conversations
+    ..details.addAll(server.details)
+    ..workflow = server.workflow
+    ..articles = server.articles
+    ..article = server.article;
+
   final _gates = <String, Completer<void>>{};
 
   /// Routes answered with this status instead (a load that fails).
