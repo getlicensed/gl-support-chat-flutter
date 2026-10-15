@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 
 import '../api/models.dart';
@@ -410,12 +411,26 @@ class _ConnectionBarState extends State<ConnectionBar> {
   }
 }
 
+/// How long one of Flutter's own animations (AnimatedSwitcher, AnimatedSize,
+/// AnimatedOpacity, AnimatedScale) is given, so that it takes [time].
+///
+/// The messenger moves whatever the phone's animation setting, as
+/// Intercom's does: measured, Intercom's messenger plays the same with
+/// reduced motion asked for as without, and we chose to match it (15 Oct
+/// 2026). So the package no longer reads MediaQuery.disableAnimations. Flutter
+/// still does: with Android's Remove animations on, every AnimationController
+/// that does not opt out runs at 5% of its time, and a 200 ms fade is over in
+/// a frame. The messenger's own controllers opt out
+/// (AnimationBehavior.preserve); the framework's widgets cannot, so they are
+/// given 20 times the time, which Flutter brings back to [time]. (iOS's
+/// Reduce Motion reaches neither: Flutter reports it as reduceMotion.)
+Duration fullTime(Duration time) => SemanticsBinding.instance.disableAnimations ? time * 20 : time;
+
 /// Something that comes and goes — a bar, a pill: over [time] it opens and
 /// fades in, and fades as it closes, instead of appearing or vanishing in
 /// one frame. While it goes it shows what it last showed; once gone it is
 /// out of the tree. [size]: it takes its room as it opens (a bar in a
-/// column); without, it only fades (a pill over the thread). At once for a
-/// phone that asks for less motion.
+/// column); without, it only fades (a pill over the thread).
 class Reveal extends StatefulWidget {
   const Reveal({super.key, required this.shown, required this.child, this.size = true});
 
@@ -430,7 +445,9 @@ class Reveal extends StatefulWidget {
 }
 
 class _RevealState extends State<Reveal> with SingleTickerProviderStateMixin {
-  late final AnimationController _open = AnimationController(vsync: this, duration: Reveal.time, value: widget.shown ? 1 : 0);
+  // Its whole time even with less motion asked for: see [fullTime].
+  late final AnimationController _open =
+      AnimationController(vsync: this, duration: Reveal.time, value: widget.shown ? 1 : 0, animationBehavior: AnimationBehavior.preserve);
   late final CurvedAnimation _t = CurvedAnimation(parent: _open, curve: Curves.easeOutCubic);
   late Widget _last = widget.child;
 
@@ -439,9 +456,7 @@ class _RevealState extends State<Reveal> with SingleTickerProviderStateMixin {
     super.didUpdateWidget(old);
     if (widget.shown) _last = widget.child;
     if (widget.shown == old.shown) return;
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _open.value = widget.shown ? 1 : 0;
-    } else if (widget.shown) {
+    if (widget.shown) {
       _open.forward();
     } else {
       _open.reverse();
@@ -511,7 +526,8 @@ ImageFrameBuilder fadeOver(Widget placeholder) => (context, child, frame, sync) 
           placeholder,
           AnimatedOpacity(
             opacity: frame == null ? 0 : 1,
-            duration: MediaQuery.maybeDisableAnimationsOf(context) ?? false ? Duration.zero : const Duration(milliseconds: 200),
+            // Even with less motion asked for: see [fullTime].
+            duration: fullTime(const Duration(milliseconds: 200)),
             curve: Curves.easeOut,
             child: child,
           ),
@@ -525,14 +541,15 @@ ImageFrameBuilder fadeIn() => (context, child, frame, sync) {
       if (sync) return child;
       return AnimatedOpacity(
         opacity: frame == null ? 0 : 1,
-        duration: MediaQuery.maybeDisableAnimationsOf(context) ?? false ? Duration.zero : const Duration(milliseconds: 200),
+        // Even with less motion asked for: see [fullTime].
+        duration: fullTime(const Duration(milliseconds: 200)),
         curve: Curves.easeOut,
         child: child,
       );
     };
 
 /// Skeleton bars below this shimmer together: a soft highlight that sweeps
-/// across every 1200 ms. Still for a phone that asks for less motion.
+/// across every 1200 ms.
 class Shimmer extends StatefulWidget {
   const Shimmer({super.key, required this.child});
   final Widget child;
@@ -544,18 +561,9 @@ class Shimmer extends StatefulWidget {
 }
 
 class _ShimmerState extends State<Shimmer> with SingleTickerProviderStateMixin {
-  late final AnimationController _sweep = AnimationController(vsync: this, duration: Shimmer.period);
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _sweep.stop();
-      _sweep.value = 0;
-    } else if (!_sweep.isAnimating) {
-      _sweep.repeat();
-    }
-  }
+  // It sweeps with less motion asked for too, as everything else does (see
+  // [fullTime]); a repeating controller keeps its time anyway.
+  late final AnimationController _sweep = AnimationController(vsync: this, duration: Shimmer.period)..repeat();
 
   @override
   void dispose() {

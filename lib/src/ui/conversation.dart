@@ -97,7 +97,6 @@ class _ConversationPageState extends State<ConversationPage> {
     final room = MediaQuery.sizeOf(context).height - keyboard;
     final cramped = keyboard > 0 && room < 600;
     final tight = keyboard > 0 && room < 300;
-    final motion = !MediaQuery.disableAnimationsOf(context);
     final Widget thread;
     if (_live) {
       _handOverPhotos(c);
@@ -120,7 +119,8 @@ class _ConversationPageState extends State<ConversationPage> {
                 rows: _liveRows(context, c),
                 sent: mine,
                 received: c.live.length + c.outgoing.length - mine,
-                glide: motion && drawn.isNotEmpty,
+                // With less motion asked for too, as Intercom's: see [fullTime].
+                glide: drawn.isNotEmpty,
               ),
       );
     } else {
@@ -261,16 +261,13 @@ class _GoneOnResetState extends State<_GoneOnReset> {
 /// local id of one on its way), so a row keeps its state — a photo already
 /// fetched — when rows are added below it, instead of taking another row's.
 class _Rows {
-  _Rows({this.motion = false});
-
-  /// The phone has not asked for less motion: rows that came in live fade in.
-  final bool motion;
   final list = <Widget>[];
   final _used = <String>{};
 
   /// [message]: the row is that message's (a [ChatMessage] or an
   /// [OutgoingMessage]); it fades in if the message came in live and has
-  /// not been drawn yet.
+  /// not been drawn yet — with less motion asked for too, as Intercom's
+  /// does (see [fullTime]).
   void add(String key, Widget row, {Object? message}) {
     // Two rows never share a key, even if the server ever sent an id twice.
     var k = key;
@@ -279,12 +276,12 @@ class _Rows {
     }
     // Every row is wrapped the same way, arriving or not: the row keeps its
     // place in the tree, and its state, from one build to the next.
-    list.add(KeyedSubtree(key: ValueKey<String>(k), child: _Entrance(message: motion ? message : null, child: row)));
+    list.add(KeyedSubtree(key: ValueKey<String>(k), child: _Entrance(message: message, child: row)));
   }
 }
 
 List<Widget> _liveRows(BuildContext context, MessengerController c) {
-  final rows = _Rows(motion: !MediaQuery.disableAnimationsOf(context));
+  final rows = _Rows();
   final label = c.session?.productLabel ?? '';
   if (c.live.isEmpty) {
     final pendingCsat = c.pendingCsatRatingId;
@@ -310,7 +307,7 @@ List<Widget> _liveRows(BuildContext context, MessengerController c) {
         }
       }
     } else if (c.typingAuthor != null) {
-      rows.add('typing', _TypingSlot(author: c.typingAuthor, replies: 0, motion: rows.motion));
+      rows.add('typing', _TypingSlot(author: c.typingAuthor, replies: 0));
     } else {
       rows.add('intro', const _IntroAndChips());
     }
@@ -321,7 +318,7 @@ List<Widget> _liveRows(BuildContext context, MessengerController c) {
     for (final m in c.live) {
       if (!m.fromVisitor) replies++;
     }
-    rows.add('typing', _TypingSlot(author: c.typingAuthor, replies: replies, motion: rows.motion));
+    rows.add('typing', _TypingSlot(author: c.typingAuthor, replies: replies));
   }
   final notice = c.flowNotice;
   if (notice != null) rows.add('notice', _ErrorLine(notice));
@@ -407,7 +404,7 @@ class _Thread extends StatefulWidget {
   const _Thread({super.key, required this.rows, this.sent = 0, this.received = 0, this.glide = false});
   final List<Widget> rows;
 
-  /// Some of the rows came in live (and the phone allows motion).
+  /// Some of the rows came in live.
   final bool glide;
 
   /// The customer's own messages, sent or on their way.
@@ -440,7 +437,10 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   /// up into place. Drawn only: nothing is laid out again.
   double _shiftFrom = 0;
   bool _shiftWaiting = false;
-  late final AnimationController _ease = AnimationController(vsync: this, duration: const Duration(milliseconds: 250), value: 1);
+  // Its whole time even with less motion asked for, as Intercom's: see
+  // [fullTime].
+  late final AnimationController _ease =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 250), value: 1, animationBehavior: AnimationBehavior.preserve);
   _RenderShifted? _shifted;
 
   /// Replies that arrived while the reader was up the thread.
@@ -587,15 +587,15 @@ class _ThreadState extends State<_Thread> with SingleTickerProviderStateMixin {
   }
 
   /// Once the new rows are laid out: down to the latest (the list is
-  /// reversed, so that is offset 0). A short way is animated; from far up
-  /// it jumps, rather than scroll through the whole history, and so it does
-  /// on a phone that asks for less motion.
+  /// reversed, so that is offset 0). A short way is animated, with less
+  /// motion asked for too, as Intercom's thread is (see [fullTime]); from
+  /// far up it jumps, rather than scroll through the whole history.
   void _toLatest() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       final from = _scroll.offset;
       if (from <= 0) return;
-      if (from > _scroll.position.viewportDimension * 2 || MediaQuery.disableAnimationsOf(context)) {
+      if (from > _scroll.position.viewportDimension * 2) {
         _scroll.jumpTo(0);
       } else {
         _goingDown = true;
@@ -1265,9 +1265,10 @@ class _MineRow extends StatelessWidget {
     } else {
       final image = o!.image;
       bubble = AnimatedOpacity(
-        // Refused: dimmed beside the reason, softly.
+        // Refused: dimmed beside the reason, softly — with less motion asked
+        // for too (see [fullTime]).
         opacity: o.failed ? 0.55 : 1,
-        duration: statusFade,
+        duration: fullTime(statusFade),
         child: _BubbleBox(
           mine: true,
           tight: image != null && o.text.isEmpty,
@@ -1290,7 +1291,8 @@ class _MineRow extends StatelessWidget {
               ],
             );
     }
-    final motion = !MediaQuery.disableAnimationsOf(context);
+    // Even with less motion asked for, as Intercom's: see [fullTime].
+    final fade = fullTime(statusFade);
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Column(
@@ -1298,12 +1300,12 @@ class _MineRow extends StatelessWidget {
         children: [
           bubble,
           AnimatedSize(
-            duration: motion ? statusFade : Duration.zero,
+            duration: fade,
             alignment: Alignment.topRight,
             child: Padding(
               padding: const EdgeInsets.only(top: 3, right: 2),
               child: AnimatedSwitcher(
-                duration: motion ? statusFade : Duration.zero,
+                duration: fade,
                 layoutBuilder: (current, previous) => Stack(alignment: Alignment.topRight, children: [...previous, if (current != null) current]),
                 child: status,
               ),
@@ -1349,7 +1351,8 @@ class _SendingLineState extends State<_SendingLine> {
   @override
   Widget build(BuildContext context) => AnimatedOpacity(
         opacity: _shown ? 1 : 0,
-        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : _MineRow.statusFade,
+        // Even with less motion asked for, as Intercom's: see [fullTime].
+        duration: fullTime(_MineRow.statusFade),
         child: const Text('Sending…', style: TextStyle(fontSize: 11, color: Palette.muted)),
       );
 }
@@ -1383,7 +1386,8 @@ class _FadeSwitch extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AnimatedSwitcher(
-        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
+        // Even with less motion asked for, as Intercom's: see [fullTime].
+        duration: fullTime(const Duration(milliseconds: 200)),
         layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
         child: child,
       );
@@ -1584,8 +1588,7 @@ class _ErrorLine extends StatelessWidget {
 class _Entrance extends StatefulWidget {
   const _Entrance({required this.message, required this.child});
 
-  /// The row's message; null for a row that is no message's, or when the
-  /// phone asks for less motion.
+  /// The row's message; null for a row that is no message's.
   final Object? message;
   final Widget child;
 
@@ -1612,7 +1615,9 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
     final message = widget.message;
     final c = context.getInheritedWidgetOfExactType<MessengerScope>()?.controller;
     if (message == null || c == null || !c.isArriving(message)) return;
-    final a = AnimationController(vsync: this, duration: _Entrance.time)..forward();
+    // Its whole time even with less motion asked for, as Intercom's: see
+    // [fullTime].
+    final a = AnimationController(vsync: this, duration: _Entrance.time, animationBehavior: AnimationBehavior.preserve)..forward();
     _in = a;
     _fade = message is! OutgoingMessage;
     _t = CurvedAnimation(parent: a, curve: Curves.easeOutCubic);
@@ -1648,17 +1653,17 @@ class _Rise extends AnimatedWidget {
 /// stop, after a moment: a teammate's "stopped typing" comes just before
 /// their message. When the reply is here the dots go at once and it takes
 /// their place, so the thread does not shrink and then grow again. For a
-/// reader up the thread, or a phone that asks for less motion, the change
-/// is at once (the thread keeps the reader's place through it).
+/// reader up the thread the change is at once (the thread keeps the
+/// reader's place through it); with less motion asked for it plays, as
+/// Intercom's does (see [fullTime]).
 class _TypingSlot extends StatefulWidget {
-  const _TypingSlot({required this.author, required this.replies, required this.motion});
+  const _TypingSlot({required this.author, required this.replies});
 
   /// Who is typing; null while nobody is.
   final TypingAuthor? author;
 
   /// Everyone else's messages so far: one more is the reply.
   final int replies;
-  final bool motion;
 
   @override
   State<_TypingSlot> createState() => _TypingSlotState();
@@ -1670,6 +1675,7 @@ class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderState
     duration: const Duration(milliseconds: 200),
     // The first 250 ms of closing hold the row as it is: time for the reply.
     reverseDuration: const Duration(milliseconds: 450),
+    animationBehavior: AnimationBehavior.preserve,
   );
   late final Animation<double> _shown = CurvedAnimation(
     parent: _open,
@@ -1685,11 +1691,7 @@ class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderState
     super.initState();
     _who = widget.author;
     if (_who == null) return;
-    if (widget.motion) {
-      _open.forward();
-    } else {
-      _open.value = 1;
-    }
+    _open.forward();
   }
 
   @override
@@ -1698,9 +1700,9 @@ class _TypingSlotState extends State<_TypingSlot> with SingleTickerProviderState
     super.dispose();
   }
 
-  /// Motion is allowed and the reader is at (or near) the latest, where the
-  /// row is in view — or on the way there.
-  bool get _animate => widget.motion && (context.findAncestorStateOfType<_ThreadState>()?._atLatest ?? true);
+  /// The reader is at (or near) the latest, where the row is in view — or
+  /// on the way there.
+  bool get _animate => context.findAncestorStateOfType<_ThreadState>()?._atLatest ?? true;
 
   @override
   void didUpdateWidget(_TypingSlot old) {
@@ -1897,7 +1899,8 @@ class _Chip extends StatelessWidget {
     // Dimmed while a choice is on its way, softly rather than in a frame.
     return AnimatedOpacity(
       opacity: enabled ? 1 : 0.55,
-      duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : Reveal.time,
+      // Even with less motion asked for, as Intercom's: see [fullTime].
+      duration: fullTime(Reveal.time),
       child: Material(
         color: whatsapp ? Colors.white : brand.light,
         shape: RoundedRectangleBorder(
@@ -2516,11 +2519,10 @@ class _ComposerState extends State<_Composer> {
       );
     // A line more or less (typed, or sent): the box eases to its height from
     // the bottom up, so the thread above moves over 150 ms, not 46 points
-    // in one frame.
+    // in one frame — with less motion asked for too, as Intercom's (see
+    // [fullTime]).
     return TextFieldTapRegion(
-      child: MediaQuery.disableAnimationsOf(context)
-          ? box
-          : AnimatedSize(duration: _Composer.grow, curve: Curves.easeOutCubic, alignment: Alignment.bottomCenter, child: box),
+      child: AnimatedSize(duration: fullTime(_Composer.grow), curve: Curves.easeOutCubic, alignment: Alignment.bottomCenter, child: box),
     );
   }
 }

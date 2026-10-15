@@ -151,7 +151,7 @@ void main() {
               body: ListView(children: [
                 for (final t in <String>['My courses', 'Bookings', 'Licence', 'Jobs'])
                   ListTile(title: Text(t), subtitle: const Text('Tap to see more'), leading: const Icon(Icons.folder_outlined)),
-                Center(child: TextButton(onPressed: () => Navigator.of(context, rootNavigator: true).push(messengerRoute(open(context), reduceMotion: false)), child: const Text('Support'))),
+                Center(child: TextButton(onPressed: () => Navigator.of(context, rootNavigator: true).push(messengerRoute(open(context))), child: const Text('Support'))),
               ]),
             ),
           ),

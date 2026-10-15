@@ -23,6 +23,11 @@ import 'support/phone.dart';
 // iPhone 13, through each transition of the messenger. Grown from the
 // measurements behind 0.4.6 (15 Oct), which found the messenger opening all
 // at once and some things moving in one frame; these keep it fluid.
+//
+// All of it twice: as usual, and with the phone asking for less motion
+// (Android's Remove animations, where Flutter would run its animations at
+// 5% of their time). The messenger moves the same either way, as
+// Intercom's does — chosen in 0.4.7 (15 Oct), after measuring Intercom's.
 const frame = Duration(milliseconds: 16);
 
 /// The iPhone 13's status bar and the strip of the app above the sheet.
@@ -30,6 +35,12 @@ const sheetTop = 47.0 + sheetGap;
 const sheetHeight = 844.0 - sheetTop;
 
 void main() {
+  for (final lessMotion in <bool>[false, true]) {
+    group(lessMotion ? 'less motion asked for:' : 'as usual:', () => frames(lessMotion: lessMotion));
+  }
+}
+
+void frames({required bool lessMotion}) {
   late GatedServer server;
   String at(int minute) => DateTime.utc(2026, 10, 6, 11, minute).toIso8601String();
 
@@ -41,12 +52,12 @@ void main() {
       msg('m1', 'visitor', 'Where is my licence card?', at: at(0)),
       msg('m2', 'agent', 'Let me check.', at: at(1)),
     ]);
+    if (lessMotion) {
+      final dispatcher = TestWidgetsFlutterBinding.ensureInitialized().platformDispatcher;
+      dispatcher.accessibilityFeaturesTestValue = const FakeAccessibilityFeatures(disableAnimations: true);
+      addTearDown(dispatcher.clearAccessibilityFeaturesTestValue);
+    }
   });
-
-  void lessMotion(WidgetTester tester) {
-    tester.platformDispatcher.accessibilityFeaturesTestValue = const FakeAccessibilityFeatures(disableAnimations: true);
-    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
-  }
 
   /// The app, with a button that opens the messenger in its sheet, as
   /// `GLSupportChat.present` does.
@@ -54,7 +65,6 @@ void main() {
     WidgetTester tester, {
     TargetPlatform platform = TargetPlatform.iOS,
     GLSupportChatScreen screen = GLSupportChatScreen.home,
-    bool reduceMotion = false,
     Phone phone = Phone.iphone13,
   }) async {
     usePhone(tester, phone);
@@ -66,7 +76,7 @@ void main() {
           body: Center(
             child: TextButton(
               onPressed: () => Navigator.of(context, rootNavigator: true)
-                  .push(messengerRoute(GLSupportChatPage(controller: c, screen: screen), reduceMotion: reduceMotion)),
+                  .push(messengerRoute(GLSupportChatPage(controller: c, screen: screen))),
               child: const Text('Open support'),
             ),
           ),
@@ -227,41 +237,6 @@ void main() {
       expect(sheetY(tester), sheetTop);
     });
 
-    testWidgets('less motion: up at once, down at once', (tester) async {
-      lessMotion(tester);
-      await host(tester, reduceMotion: true);
-      await tester.tap(find.text('Open support'));
-      await tester.pump();
-      expect(await sample(tester, 3, () => sheetY(tester)), <double?>[sheetTop, sheetTop, sheetTop]);
-      await settle(tester);
-      await tester.tap(find.byTooltip('Close').first);
-      await tester.pump();
-      expect(sheetY(tester), isNull);
-    });
-
-    testWidgets('less motion: Home, the skeleton, the tabs — everything is simply there, nothing left animating', (tester) async {
-      lessMotion(tester);
-      server.hold(<String>['/widget/auth']);
-      await host(tester, reduceMotion: true);
-      await tester.tap(find.text('Open support'));
-      await tester.pump();
-      await tester.pump(frame);
-      expect(find.byType(HomeSkeleton), findsOneWidget);
-      await tester.pump(const Duration(seconds: 1)); // the tap's own ripple, in the app
-      expect(tester.binding.hasScheduledFrame, isFalse, reason: 'the skeleton does not shimmer');
-      server.release();
-      await tester.pump();
-      await tester.pump();
-      await tester.pump(frame);
-      expect(find.byType(HomeSkeleton), findsNothing);
-      expect(opacityOf(tester, find.text('Send us a message')), 1, reason: 'Home whole at once: no cross-fade, no stagger');
-      await tester.tap(find.text('Messages'));
-      await tester.pump();
-      expect(find.byType(HomeTab), findsNothing, reason: 'the tab changes at once');
-      await tester.pump(const Duration(seconds: 1)); // the tap's ripple
-      expect(tester.binding.hasScheduledFrame, isFalse);
-    });
-
     testWidgets('opened on a conversation (a push tapped): it rises with the sheet, never in from the side', (tester) async {
       final c = await host(tester, screen: GLSupportChatScreen.conversation('conv-1'));
       // What it shows already in (opened before): the conversation is
@@ -319,12 +294,15 @@ void main() {
       await settle(tester);
       await tester.tap(find.text('Send us a message'));
       await tester.pump();
+      final sliding = <double>[];
       for (var i = 0; i < 30; i++) {
         await tester.pump(frame);
         final conv = find.byType(ConversationPage);
         if (conv.evaluate().isEmpty) continue;
         expect(tester.getTopLeft(conv).dy, greaterThanOrEqualTo(sheetTop - 0.5), reason: 'frame ${i + 1}: never over the strip');
+        sliding.add(ModalRoute.of(tester.element(conv))!.animation!.value);
       }
+      expect(sliding.where((t) => t > 0 && t < 1).length, greaterThanOrEqualTo(5), reason: 'it slides in over frames, not in one: $sliding');
       expect(scrim(tester), messengerScrim, reason: 'the strip stays as dim as it was');
     });
   });
@@ -352,7 +330,15 @@ void main() {
       // (A pushed page's first frame is built offstage, for its heroes.)
       await tester.pump(frame);
       expect(find.byType(HomeSkeleton), findsOneWidget, reason: 'no spinner on white: Home, as a skeleton');
-      await tester.pump(const Duration(milliseconds: 500));
+      List<double>? shimmer() {
+        final bar = tester.widget<Container>(find.descendant(of: find.byType(SkeletonBar).first, matching: find.byType(Container)).first);
+        return ((bar.decoration! as BoxDecoration).gradient as LinearGradient?)?.stops;
+      }
+
+      final swept = shimmer();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(shimmer(), isNot(swept), reason: 'the skeleton shimmers');
+      await tester.pump(const Duration(milliseconds: 200));
       final skeletonHelp = tester.getSize(helpCard()).height;
       final skeletonSend = tester.getSize(find.byType(MessengerCard).first).height;
 
@@ -455,7 +441,9 @@ void main() {
       expect(waiting.children.first, same(placeholder));
       final fading = waiting.children.last as AnimatedOpacity;
       expect(fading.opacity, 0);
-      expect(fading.duration, const Duration(milliseconds: 200));
+      // With less motion asked for it is given 20 times that, which Flutter
+      // plays at 5%: 200 ms either way.
+      expect(fading.duration, lessMotion ? const Duration(seconds: 4) : const Duration(milliseconds: 200));
       final loaded = (build(context, child, 0, false) as Stack).children.last as AnimatedOpacity;
       expect(loaded.opacity, 1, reason: 'then it fades up over the initial');
       expect(build(context, child, 0, true), same(child), reason: 'from the cache: no fade at all');

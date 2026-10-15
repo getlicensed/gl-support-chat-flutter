@@ -444,7 +444,9 @@ class GLSupportChat {
     }
     final requests = MessengerRequests();
     final page = GLSupportChatPage(controller: controller, screen: screen, fallback: _fallback, browserUrl: browserUrl, requests: requests);
-    final route = messengerRoute(page, reduceMotion: MediaQuery.maybeDisableAnimationsOf(context) ?? false);
+    // The phone's animation setting is not read: the sheet rises whatever
+    // it is, as Intercom's messenger does (chosen 15 Oct; see fullTime).
+    final route = messengerRoute(page);
     final closed = Completer<void>();
     if (controller != null) {
       _shown = closed.future;

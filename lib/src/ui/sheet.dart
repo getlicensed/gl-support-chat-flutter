@@ -81,9 +81,6 @@ class MessengerSheet {
   /// The sheet's height at the last layout.
   double height = 0;
 
-  /// The phone asks for less motion: a released drag lands at once.
-  bool still = false;
-
   /// A drag is in hand or its release is settling: the sheet follows the
   /// route's animation one to one, not through the curves, and the
   /// navigator knows a gesture is under way.
@@ -182,14 +179,9 @@ class MessengerSheet {
         _route.navigator?.popUntil((r) => !(r.settings.name ?? '').startsWith(messengerRoutePrefix));
       }
       // The pop started the close from where the finger left it; it goes
-      // on at the finger's speed instead of starting slow again.
-      if (still) {
-        c.value = 0;
-      } else {
-        c.fling(velocity: -math.max(1.0, velocity / h), springDescription: messengerSpring);
-      }
-    } else if (still) {
-      c.value = 1;
+      // on at the finger's speed instead of starting slow again — with less
+      // motion asked for too, as everything in the messenger (see [fullTime]).
+      c.fling(velocity: -math.max(1.0, velocity / h), springDescription: messengerSpring);
     } else {
       c.fling(velocity: math.max(1.0, -velocity / h), springDescription: messengerSpring);
     }
@@ -233,22 +225,22 @@ class _SheetScope extends InheritedWidget {
 
 /// The messenger's own route: the sheet. It comes up in [messengerOpenTime]
 /// on [messengerOpenCurve] (a spring) and goes down in [messengerCloseTime] on
-/// [messengerCloseCurve]; with [reduceMotion] it is simply there, and gone.
+/// [messengerCloseCurve] — whatever the phone's animation setting, as
+/// Intercom's does (see [fullTime]).
 class MessengerSheetRoute extends PageRoute<void> {
-  MessengerSheetRoute({required this.page, required this.reduceMotion}) : super(settings: const RouteSettings(name: messengerRoutePrefix));
+  MessengerSheetRoute({required this.page}) : super(settings: const RouteSettings(name: messengerRoutePrefix));
 
   final Widget page;
-  final bool reduceMotion;
   late final MessengerSheet sheet = MessengerSheet._(this);
   CurvedAnimation? _curve;
 
   AnimationController? get sheetController => controller;
 
   @override
-  Duration get transitionDuration => reduceMotion ? Duration.zero : messengerOpenTime;
+  Duration get transitionDuration => messengerOpenTime;
 
   @override
-  Duration get reverseTransitionDuration => reduceMotion ? Duration.zero : messengerCloseTime;
+  Duration get reverseTransitionDuration => messengerCloseTime;
 
   @override
   bool get opaque => false;
@@ -264,7 +256,7 @@ class MessengerSheetRoute extends PageRoute<void> {
 
   @override
   AnimationController createAnimationController() {
-    final c = super.createAnimationController();
+    final c = _wholeTime(this);
     // The close curve is a time curve; played backwards it is flipped.
     _curve = CurvedAnimation(parent: c, curve: messengerOpenCurve, reverseCurve: messengerCloseCurve.flipped);
     c.addListener(() => sheet._update(c.value, _curve!.value));
@@ -275,10 +267,8 @@ class MessengerSheetRoute extends PageRoute<void> {
   Widget buildPage(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation) => sheet.wrap(page);
 
   @override
-  Widget buildTransitions(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation, Widget child) {
-    sheet.still = reduceMotion || MediaQuery.disableAnimationsOf(context);
-    return MessengerSheetFrame(sheet: sheet, child: child);
-  }
+  Widget buildTransitions(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation, Widget child) =>
+      MessengerSheetFrame(sheet: sheet, child: child);
 
   @override
   void dispose() {
@@ -287,6 +277,19 @@ class MessengerSheetRoute extends PageRoute<void> {
     super.dispose();
   }
 }
+
+/// A route's controller as Flutter makes it, but kept to its whole time when
+/// the phone asks for less motion (Android's Remove animations), where
+/// Flutter's own would run at 5% of it: the messenger moves as Intercom's
+/// does whatever the setting (see [fullTime]). The drag's fling on it keeps
+/// its speed for the same reason.
+AnimationController _wholeTime(TransitionRoute<void> route) => AnimationController(
+      duration: route.transitionDuration,
+      reverseDuration: route.reverseTransitionDuration,
+      debugLabel: route.debugLabel,
+      vsync: route.navigator!,
+      animationBehavior: AnimationBehavior.preserve,
+    );
 
 /// Where a messenger screen is drawn: below the status bar and a [sheetGap],
 /// rounded at the top, as far up as the sheet is, and draggable down. The
@@ -392,6 +395,10 @@ mixin _InSheet on PageRoute<void> {
   /// Back from a screen that came at once slides as usual.
   @override
   Duration get reverseTransitionDuration => instant ? super.transitionDuration : super.reverseTransitionDuration;
+
+  /// It slides in and out at its whole time with less motion asked for too.
+  @override
+  AnimationController createAnimationController() => _wholeTime(this);
 
   @override
   Widget buildTransitions(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation, Widget child) {

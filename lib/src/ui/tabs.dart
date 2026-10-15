@@ -109,9 +109,8 @@ class _MessengerTabsState extends State<MessengerTabs> {
 /// going fades out in 90 ms, then the one coming fades in over 210 ms as it
 /// grows from 92% — one tab on screen at a time, never two over each other.
 /// The status bar changes with what is on screen, when the new tab shows,
-/// not a frame (or 90 ms) early. At once on a phone that asks for less
-/// motion. As in an IndexedStack, a tab not shown takes no focus: a search
-/// left typed in Help lets the keyboard go.
+/// not a frame (or 90 ms) early. As in an IndexedStack, a tab not shown
+/// takes no focus: a search left typed in Help lets the keyboard go.
 class _TabStack extends StatefulWidget {
   const _TabStack({required this.index, required this.styles, required this.children});
   final int index;
@@ -129,8 +128,9 @@ class _TabStack extends StatefulWidget {
 }
 
 class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixin {
-  // Linear, so a change cut short is picked up exactly where it was.
-  late final AnimationController _t = AnimationController(vsync: this, duration: _TabStack.time, value: 1)
+  // Linear, so a change cut short is picked up exactly where it was. Its
+  // whole time even with less motion asked for, as Intercom's: see [fullTime].
+  late final AnimationController _t = AnimationController(vsync: this, duration: _TabStack.time, value: 1, animationBehavior: AnimationBehavior.preserve)
     ..addStatusListener((status) {
       if (status == AnimationStatus.completed && _leaving != null && mounted) setState(() => _leaving = null);
     });
@@ -155,11 +155,6 @@ class _TabStackState extends State<_TabStack> with SingleTickerProviderStateMixi
   void didUpdateWidget(_TabStack old) {
     super.didUpdateWidget(old);
     if (old.index == widget.index) return;
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _leaving = null;
-      _t.value = 1;
-      return;
-    }
     final (shown, amount) = _onScreen(old.index);
     if (shown == widget.index) {
       // Straight back to the tab still on screen: it comes back from as
@@ -251,7 +246,8 @@ class HomeTab extends StatelessWidget {
       // A new one for each customer: after a sign-out the one before's Home
       // goes at once, never faded out over the next one's skeleton.
       key: ValueKey<int>(c.resets),
-      duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
+      // Even with less motion asked for, as Intercom's: see [fullTime].
+      duration: fullTime(const Duration(milliseconds: 200)),
       layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
       child: ready ? _Home(key: const ValueKey<String>('home'), onSearch: onSearch) : const HomeSkeleton(key: ValueKey<String>('skeleton')),
     );
@@ -398,7 +394,7 @@ class HomeSkeleton extends StatelessWidget {
 /// Home. The first time it shows in an open messenger its parts come in
 /// one after another — the header, then each card 60 ms after the one
 /// before — each fading in as it rises 12 points, so it never lands all at
-/// once. Not for a phone that asks for less motion.
+/// once — with less motion asked for too.
 class _Home extends StatefulWidget {
   const _Home({super.key, required this.onSearch});
   final VoidCallback onSearch;
@@ -414,9 +410,12 @@ class _Home extends StatefulWidget {
 
 class _HomeState extends State<_Home> with SingleTickerProviderStateMixin {
   static const _parts = 4;
+  // Its whole time even with less motion asked for, as Intercom's: see
+  // [fullTime].
   late final AnimationController _in = AnimationController(
     vsync: this,
     duration: _Home.step * (_parts - 1) + _Home.each,
+    animationBehavior: AnimationBehavior.preserve,
   );
   late final List<CurvedAnimation> _part = <CurvedAnimation>[
     for (var i = 0; i < _parts; i++)
@@ -429,18 +428,11 @@ class _HomeState extends State<_Home> with SingleTickerProviderStateMixin {
         ),
       ),
   ];
-  bool _started = false;
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_started) return;
-    _started = true;
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _in.value = 1;
-    } else {
-      _in.forward();
-    }
+  void initState() {
+    super.initState();
+    _in.forward();
   }
 
   @override
@@ -689,7 +681,10 @@ class _HomeHelpCardState extends State<_HomeHelpCard> with SingleTickerProviderS
   static const _apart = Duration(milliseconds: 30);
   static const _rows = 5;
 
-  late final AnimationController _in = AnimationController(vsync: this, duration: _fade + _apart * (_rows - 1), value: 1);
+  // Its whole time even with less motion asked for, as Intercom's: see
+  // [fullTime].
+  late final AnimationController _in =
+      AnimationController(vsync: this, duration: _fade + _apart * (_rows - 1), value: 1, animationBehavior: AnimationBehavior.preserve);
   late final List<CurvedAnimation> _row = <CurvedAnimation>[
     for (var i = 0; i < _rows; i++)
       CurvedAnimation(
@@ -718,7 +713,6 @@ class _HomeHelpCardState extends State<_HomeHelpCard> with SingleTickerProviderS
   Widget build(BuildContext context) {
     final c = context.messenger;
     final brand = c.brand;
-    final motion = !MediaQuery.disableAnimationsOf(context);
     Widget note(String text) => Padding(
           padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
           child: Text(text, style: const TextStyle(fontSize: 13, color: Palette.muted)),
@@ -733,7 +727,7 @@ class _HomeHelpCardState extends State<_HomeHelpCard> with SingleTickerProviderS
     } else if (c.articles.isEmpty) {
       rows = note('Help articles will appear here once published.');
     } else {
-      if (_waited && motion) {
+      if (_waited) {
         _waited = false;
         _in.forward(from: 0);
       }
@@ -793,7 +787,8 @@ class _HomeHelpCardState extends State<_HomeHelpCard> with SingleTickerProviderS
           ),
           const SizedBox(height: 4),
           AnimatedSize(
-            duration: motion ? _fade : Duration.zero,
+            // Even with less motion asked for: see [fullTime].
+            duration: fullTime(_fade),
             curve: Curves.easeOutCubic,
             alignment: Alignment.topCenter,
             child: rows,

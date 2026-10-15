@@ -47,7 +47,6 @@ class _ArticlePageState extends State<ArticlePage> {
 
   Widget _page(BuildContext context) {
     final c = context.messenger;
-    final motion = !MediaQuery.disableAnimationsOf(context);
     return Scaffold(
       backgroundColor: Colors.white,
       body: SafeArea(
@@ -96,7 +95,8 @@ class _ArticlePageState extends State<ArticlePage> {
                 ),
                 Expanded(
                   child: AnimatedSwitcher(
-                    duration: motion ? ArticlePage.fadeIn : Duration.zero,
+                    // Even with less motion asked for, as Intercom's: see [fullTime].
+                    duration: fullTime(ArticlePage.fadeIn),
                     switchInCurve: Curves.easeOutCubic,
                     switchOutCurve: Curves.easeOutCubic,
                     layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
@@ -387,7 +387,8 @@ class _Face extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final time = MediaQuery.disableAnimationsOf(context) ? Duration.zero : _Face.time;
+    // Even with less motion asked for, as Intercom's: see [fullTime].
+    final time = fullTime(_Face.time);
     return Semantics(
       button: true,
       selected: chosen,

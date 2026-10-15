@@ -320,7 +320,8 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
               shown = MessengerTabs(key: ValueKey<int>(_tabsVersion), initialTab: _tab);
             }
             return AnimatedSwitcher(
-              duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 200),
+              // Even with less motion asked for, as Intercom's: see [fullTime].
+              duration: fullTime(const Duration(milliseconds: 200)),
               child: shown,
             );
           }),
@@ -331,9 +332,9 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
 }
 
 /// The messenger's own route: a sheet that rises over the app, which shows
-/// dimmed in a strip above it (see [MessengerSheetRoute]). A phone that asks
-/// for less motion gets it at once both ways.
-Route<void> messengerRoute(Widget page, {required bool reduceMotion}) => MessengerSheetRoute(page: page, reduceMotion: reduceMotion);
+/// dimmed in a strip above it (see [MessengerSheetRoute]). It rises and
+/// goes down with less motion asked for too, as Intercom's does.
+Route<void> messengerRoute(Widget page) => MessengerSheetRoute(page: page);
 
 /// "We can't open the chat right now" — with Try again, and the contacts that
 /// work without our servers.

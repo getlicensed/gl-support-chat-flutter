@@ -15,9 +15,17 @@ import 'support/phone.dart';
 
 // Motion, as in Intercom's messenger (12 Oct): what comes in live fades in,
 // the typing row opens and closes in place and the reply takes it, the tabs
-// cross-fade, Home fades in after the spinner, the sheet rises and falls —
-// and none of it when the phone asks for less motion.
+// cross-fade, Home fades in after the spinner, the sheet rises and falls.
+// All of it twice: as usual, and with the phone asking for less motion
+// (Android's Remove animations). It moves the same either way, as
+// Intercom's does — chosen in 0.4.7 (15 Oct); 0.4.6 stood still.
 void main() {
+  for (final lessMotion in <bool>[false, true]) {
+    group(lessMotion ? 'less motion asked for:' : 'as usual:', () => motion(lessMotion: lessMotion));
+  }
+}
+
+void motion({required bool lessMotion}) {
   late GatedServer server;
   late FakeChannel channel;
 
@@ -33,12 +41,12 @@ void main() {
       msg('m1', 'visitor', 'Where is my licence card?', at: at(0)),
       msg('m2', 'agent', 'Let me check.', at: at(1)),
     ]);
+    if (lessMotion) {
+      final dispatcher = TestWidgetsFlutterBinding.ensureInitialized().platformDispatcher;
+      dispatcher.accessibilityFeaturesTestValue = const FakeAccessibilityFeatures(disableAnimations: true);
+      addTearDown(dispatcher.clearAccessibilityFeaturesTestValue);
+    }
   });
-
-  void lessMotion(WidgetTester tester) {
-    tester.platformDispatcher.accessibilityFeaturesTestValue = const FakeAccessibilityFeatures(disableAnimations: true);
-    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
-  }
 
   Finder page() => find.byType(ConversationPage);
   Finder threadList() => find.descendant(of: page(), matching: find.byType(ListView));
@@ -376,16 +384,13 @@ void main() {
       c.dispose();
     });
 
-    test('the sheet rises in 400 ms and goes down in 250 ms; at once with less motion', () {
-      final route = messengerRoute(const SizedBox(), reduceMotion: false) as MessengerSheetRoute;
+    test('the sheet rises in 400 ms and goes down in 250 ms', () {
+      final route = messengerRoute(const SizedBox()) as MessengerSheetRoute;
       expect(route.transitionDuration, const Duration(milliseconds: 400));
       expect(route.reverseTransitionDuration, const Duration(milliseconds: 250));
       expect(route.opaque, isFalse, reason: 'the app shows behind it');
       expect(route.barrierColor, const Color(0x66000000), reason: 'dimmed by 40%');
       expect(route.settings.name, 'gl_support_chat', reason: 'close pops it by name');
-      final still = messengerRoute(const SizedBox(), reduceMotion: true) as MessengerSheetRoute;
-      expect(still.transitionDuration, Duration.zero);
-      expect(still.reverseTransitionDuration, Duration.zero);
     });
   });
 
@@ -431,58 +436,6 @@ void main() {
       expect(sheetTop(tester), inExclusiveRange(57, 844), reason: 'going down');
       await tester.pump(const Duration(milliseconds: 131));
       expect(find.byType(GLSupportChatPage), findsNothing, reason: 'gone within 250 ms');
-    });
-
-    testWidgets('less motion: the sheet is up at once, and gone at once', (tester) async {
-      lessMotion(tester);
-      final host = await app(tester);
-      unawaited(GLSupportChat.present(host));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 16));
-      expect(sheetTop(tester), 57);
-      await settle(tester);
-      Navigator.of(host, rootNavigator: true).pop();
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 16));
-      expect(find.byType(GLSupportChatPage), findsNothing);
-    });
-  });
-
-  group('less motion', () {
-    testWidgets('nothing fades, grows or glides: a reply, the typing row, the tabs', (tester) async {
-      lessMotion(tester);
-      server.details['conv-1'] = detail('conv-1', <Map<String, dynamic>>[
-        for (var i = 0; i < 30; i++)
-          msg('m$i', i.isEven ? 'visitor' : 'agent', 'Message number $i, about the licence card and when it will arrive.', at: DateTime.utc(2026, 10, 6, 9, i).toIso8601String()),
-      ]);
-      await openChat(tester);
-
-      channel.server('typing:start', <String, dynamic>{'conversationId': 'conv-1', 'authorType': 'agent', 'authorId': levi, 'authorName': 'Levi John'});
-      await tester.pump();
-      final rowBox = find.descendant(of: typingSlot(), matching: find.byType(ClipRect)).first;
-      final full = tester.getSize(rowBox).height;
-      expect(full, greaterThan(30), reason: 'whole at once');
-      final dots = find.descendant(of: typingSlot(), matching: find.byType(FadeTransition)).first;
-      expect(tester.widget<FadeTransition>(dots).opacity.value, 1);
-
-      await arrive(tester, msg('r1', 'agent', 'Found it: posted on Monday.', at: at(30)));
-      expect(fadeOf(tester, 'Found it: posted on Monday.'), isNull, reason: 'no fade');
-      expect(typingRow(), findsNothing);
-      final scroll = tester.widget<ListView>(threadList()).controller!;
-      expect(scroll.offset, 0, reason: 'at the latest at once, no glide');
-
-      channel.server('typing:start', <String, dynamic>{'conversationId': 'conv-1', 'authorType': 'bot'});
-      await tester.pump();
-      channel.server('typing:stop', <String, dynamic>{'conversationId': 'conv-1', 'authorType': 'bot'});
-      await tester.pump();
-      expect(typingRow(), findsNothing, reason: 'gone at once');
-
-      await tester.tap(find.byTooltip('Back'));
-      await settle(tester);
-      await tester.tap(find.text('Home'));
-      await tester.pump();
-      expect(find.byType(MessagesTab), findsNothing, reason: 'the tab changes at once, no cross-fade');
-      expect(find.byType(HomeTab), findsOneWidget);
     });
   });
 
