@@ -15,6 +15,7 @@ import '../core/controller.dart';
 import '../core/format.dart';
 import 'common.dart';
 import 'navigation.dart';
+import 'photo_viewer.dart';
 
 /// One conversation. Without [conversationId] it is the live one — the open
 /// conversation, or a new one on the first message. With an id it is that
@@ -45,6 +46,17 @@ class _ConversationPageState extends State<ConversationPage> {
   /// The rows as last built: one whose message has not changed is the same
   /// widget again, which Flutter does not rebuild.
   final _cache = _RowCache();
+
+  /// The past conversation as it is drawn now, for the viewer's photos.
+  ConversationDetail? _shownPast;
+
+  /// The thread's photos, oldest first, as the viewer pages through them:
+  /// the messages drawn now and, live, those on their way.
+  List<ViewerPhoto> _photos() {
+    final c = _controller!;
+    if (!_live) return _photosOf(c, _shownPast?.messages ?? const <ChatMessage>[], const <OutgoingMessage>[]);
+    return _photosOf(c, c.live, c.outgoing.where((o) => !c.isTakenOver(o)));
+  }
 
   @override
   void didChangeDependencies() {
@@ -130,6 +142,7 @@ class _ConversationPageState extends State<ConversationPage> {
       initialData: c.cachedConversation(id),
       builder: (context, snap) {
         final d = snap.data ?? c.cachedConversation(id);
+        _shownPast = d;
         final Widget shown;
         if (d != null) {
           // The rows know the chatbot's name and colour: built again if those change.
@@ -187,7 +200,7 @@ class _ConversationPageState extends State<ConversationPage> {
                     child: LayoutBuilder(
                       builder: (context, box) => Column(
                         children: [
-                          Expanded(child: SafeArea(top: false, bottom: false, child: thread)),
+                          Expanded(child: SafeArea(top: false, bottom: false, child: _Gallery(photos: _photos, child: thread))),
                           ConstrainedBox(
                             constraints: BoxConstraints(maxHeight: box.maxHeight),
                             child: SafeArea(
@@ -1628,7 +1641,7 @@ class _Bubble extends StatelessWidget {
         (8, _InBubbleCard(
           icon: Icons.attach_file,
           title: meta!.fileName ?? 'File',
-          onTap: () => openExternal(context, Uri.parse(meta.fileUrl!)),
+          onTap: () => openFile(context, Uri.parse(meta.fileUrl!)),
         )),
     ];
     final children = <Widget>[
@@ -1750,7 +1763,7 @@ class _MineRow extends StatelessWidget {
           tight: image != null && o.text.isEmpty,
           children: [
             // Kept: the photo is the same picture under the server's copy.
-            if (image != null) _Photo(image: _memory(image), framed: o.text.isNotEmpty),
+            if (image != null) _Photo(image: _memory(image), framed: o.text.isNotEmpty, hero: o, name: o.imageName ?? 'Photo'),
             if (image != null && o.text.isNotEmpty) const SizedBox(height: 6),
             if (o.text.isNotEmpty) Text(o.text, style: TextStyle(fontSize: 15, height: 1.45, color: brand.onPrimary)),
           ],
@@ -2041,10 +2054,61 @@ final _memoryImages = Expando<MemoryImage>('photo image');
 
 MemoryImage _memory(Uint8List bytes) => _memoryImages[bytes] ??= MemoryImage(bytes);
 
+/// The thread's photos for the viewer, asked for when a photo is tapped:
+/// what the thread shows then, not what it showed when the row was built.
+class _Gallery extends InheritedWidget {
+  const _Gallery({required this.photos, required super.child});
+  final List<ViewerPhoto> Function() photos;
+
+  @override
+  bool updateShouldNotify(_Gallery old) => false;
+}
+
+/// The photos of [messages], then of [outgoing], in the thread's order,
+/// each under the tag its thumbnail flies by. The customer's own are
+/// fetched only as the viewer reaches them; those the thread has fetched
+/// show at once.
+List<ViewerPhoto> _photosOf(MessengerController c, Iterable<ChatMessage> messages, Iterable<OutgoingMessage> outgoing) {
+  final photos = <ViewerPhoto>[];
+  for (final m in messages) {
+    for (final a in m.attachments) {
+      if (!a.isImage) continue;
+      final size = a.width != null && a.height != null ? Size(a.width!.toDouble(), a.height!.toDouble()) : null;
+      final id = a.uploadId;
+      if (id != null) {
+        final asked = c.fileBytesAsked(id);
+        final bytes = asked == null ? null : _photoBytes[asked];
+        photos.add(ViewerPhoto(
+          tag: a,
+          name: a.name,
+          size: size,
+          image: bytes == null || bytes.isEmpty ? null : _memory(bytes),
+          load: () async {
+            final lookup = c.fileBytes(id);
+            final got = await lookup;
+            if (got.isEmpty) throw StateError('no photo');
+            _photoBytes[lookup] = got;
+            return _memory(got);
+          },
+        ));
+      } else if (a.url.startsWith('https://')) {
+        photos.add(ViewerPhoto(tag: a, name: a.name, size: size, image: NetworkImage(a.url)));
+      }
+    }
+  }
+  for (final o in outgoing) {
+    final image = o.image;
+    if (image != null) photos.add(ViewerPhoto(tag: o, name: o.imageName ?? 'Photo', image: _memory(image)));
+  }
+  return photos;
+}
+
 /// A photo or file on a message. The customer's own photos are read with
-/// their token (they have no public address); https files open outside.
-/// [framed]: inside a bubble with words, rounded on its own; alone, the
-/// bubble is cut to it.
+/// their token (they have no public address); a photo opens in the viewer.
+/// The team's files (public https addresses) open inside the app ([openFile]);
+/// the customer's own others (a PDF) have no address to open, and are only
+/// named. [framed]: inside a bubble with words, rounded on its own; alone,
+/// the bubble is cut to it.
 class _AttachmentView extends StatelessWidget {
   const _AttachmentView({required this.attachment, required this.mine, this.framed = true});
   final Attachment attachment;
@@ -2067,7 +2131,7 @@ class _AttachmentView extends StatelessWidget {
           final bytes = snap.data;
           if (bytes != null && bytes.isNotEmpty) {
             _photoBytes[lookup] = bytes;
-            return _Photo(image: _memory(bytes), size: size, framed: framed);
+            return _Photo(image: _memory(bytes), size: size, framed: framed, hero: a, name: a.name);
           }
           if (snap.hasError) return _FileChip(name: a.name, mine: mine);
           // Its box, grey, while the bytes come: the same box the photo fills.
@@ -2075,11 +2139,11 @@ class _AttachmentView extends StatelessWidget {
         },
       );
     }
-    if (a.isImage && a.url.startsWith('https://')) return _Photo(image: NetworkImage(a.url), size: size, framed: framed);
+    if (a.isImage && a.url.startsWith('https://')) return _Photo(image: NetworkImage(a.url), size: size, framed: framed, hero: a, name: a.name);
     return _FileChip(
       name: a.name,
       mine: mine,
-      onTap: a.url.startsWith('https://') ? () => openExternal(context, Uri.parse(a.url)) : null,
+      onTap: a.url.startsWith('https://') ? () => openFile(context, Uri.parse(a.url)) : null,
     );
   }
 }
@@ -2088,9 +2152,9 @@ class _AttachmentView extends StatelessWidget {
 /// own shape when the server says it, else 4:3 — grey until the picture has
 /// loaded, which then fades in over it in 150 ms. Nothing around it moves
 /// when it does. Decoded at the size it is drawn; the whole picture only in
-/// the viewer a tap opens.
+/// the viewer a tap opens, which it flies into ([hero]).
 class _Photo extends StatelessWidget {
-  const _Photo({this.image, this.size, this.framed = true});
+  const _Photo({this.image, this.size, this.framed = true, this.hero, this.name = 'Photo'});
 
   /// Null while its bytes are on their way: the box alone.
   final ImageProvider? image;
@@ -2101,8 +2165,15 @@ class _Photo extends StatelessWidget {
   /// Rounded on its own (beside words); without, the bubble around it is.
   final bool framed;
 
-  static const width = 240.0;
-  static const radius = 16.0;
+  /// Its tag in the viewer's flight: what it is the picture of (the
+  /// attachment, or the message on its way). One per photo.
+  final Object? hero;
+
+  /// The file's name, over it in the viewer.
+  final String name;
+
+  static const width = threadPhotoWidth;
+  static const radius = PhotoViewer.threadRadius;
   static const fade = Duration(milliseconds: 150);
 
   /// Its shape: the photo's own, kept between a tall 3:4 and a wide 2:1.
@@ -2112,38 +2183,46 @@ class _Photo extends StatelessWidget {
     return (s.width / s.height).clamp(0.75, 2.0);
   }
 
+  /// The viewer, on this photo among the thread's: it flies there from
+  /// here. A photo the thread does not list (it should) is shown alone.
   void _view(BuildContext context, ImageProvider image) {
     final scope = context.getInheritedWidgetOfExactType<MessengerScope>();
-    showDialog<void>(
-      context: context,
+    final tag = hero ?? image;
+    final all = context.getInheritedWidgetOfExactType<_Gallery>()?.photos() ?? const <ViewerPhoto>[];
+    final at = all.indexWhere((p) => identical(p.tag, tag));
+    final photos = List<ViewerPhoto>.of(at < 0 ? const <ViewerPhoto>[] : all);
+    // This one as it is drawn here: the flight's picture is already decoded.
+    final here = ViewerPhoto(tag: tag, name: name, image: image, size: size);
+    if (at < 0) {
+      photos.add(here);
+    } else {
+      photos[at] = here;
+    }
+    Navigator.of(context).push(photoViewerRoute(
       // Named as the messenger's: closed with it, and with a sign-out.
-      routeSettings: const RouteSettings(name: '$messengerRoutePrefix/photo'),
+      settings: const RouteSettings(name: '$messengerRoutePrefix/photo'),
       builder: (_) {
-        final viewer = GestureDetector(
-          onTap: () => Navigator.of(context).pop(),
-          child: InteractiveViewer(child: Image(image: image)),
-        );
+        final viewer = PhotoViewer(photos: photos, initial: at < 0 ? 0 : at);
         return scope == null ? viewer : _GoneOnReset(controller: scope.controller, child: viewer);
       },
-    );
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
     final image = this.image;
-    // Decoded to the box's width in the phone's pixels, not the photo's
-    // own (up to 2048 wide): less to decode, and to hold.
-    final pixels = (width * MediaQuery.devicePixelRatioOf(context)).round();
+    final dpr = MediaQuery.devicePixelRatioOf(context);
     Widget box = SizedBox(
       width: width,
       height: (width / _aspect).roundToDouble(),
       child: ColoredBox(
         color: Palette.fill,
-        child: image == null ? null : Image(image: ResizeImage(image, width: pixels), fit: BoxFit.cover, frameBuilder: fadeIn(fade), gaplessPlayback: true),
+        child: image == null ? null : Image(image: threadThumb(image, dpr), fit: BoxFit.cover, frameBuilder: fadeIn(fade), gaplessPlayback: true),
       ),
     );
     if (framed) box = ClipRRect(borderRadius: BorderRadius.circular(radius), child: box);
     if (image == null) return box;
+    box = Hero(tag: hero ?? image, flightShuttleBuilder: photoFlight(image, dpr), child: box);
     // The press over the picture, on a Material of its own laid on top:
     // drawn under it, a ripple would be hidden by the photo.
     return Stack(

@@ -265,6 +265,14 @@ Future<void> openExternal(BuildContext context, Uri uri) async {
   messenger?.showSnackBar(const SnackBar(content: Text("Couldn't open that link on this phone.")));
 }
 
+/// Open a file the team sent inside the app ([launchInApp]): the customer
+/// reads it and comes back to the chat, rather than leave for the browser.
+Future<void> openFile(BuildContext context, Uri uri) async {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  if (await launchInApp(uri.toString())) return;
+  messenger?.showSnackBar(const SnackBar(content: Text("Couldn't open that file on this phone.")));
+}
+
 /// Something to tap, with the platform's feedback under the finger.
 ///
 /// iOS: no ripple (iOS controls do not ripple) but a highlight over the

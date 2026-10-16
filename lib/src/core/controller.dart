@@ -1601,6 +1601,10 @@ class MessengerController extends ChangeNotifier {
     });
   }
 
+  /// The lookup of the customer's photo, if one has been made — without
+  /// making one: the viewer knows which photos it can show at once.
+  Future<Uint8List>? fileBytesAsked(String uploadId) => _files[uploadId];
+
   /// The chips under an empty thread: the chatbot's own, else its top articles.
   List<SuggestedQuestion> get chips {
     final own = session?.suggestedQuestions ?? const <SuggestedQuestion>[];

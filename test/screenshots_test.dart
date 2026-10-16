@@ -239,6 +239,59 @@ void main() {
     await t.pump(const Duration(seconds: 1));
   }, skip: !enabled);
 
+  // 0.4.9: the photo viewer, open, and dragged part way down to close.
+  testWidgets('photo viewer', (t) async {
+    phone(t);
+    const id = 'aaaaaaaa-0000-4000-8000-000000000001';
+    final server = seeded();
+    server.files[id] = (await t.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      canvas.drawRect(const Rect.fromLTWH(0, 0, 900, 1200), Paint()..color = const Color(0xFF4A90D9));
+      canvas.drawCircle(const Offset(450, 600), 300, Paint()..color = const Color(0xFFFFD54F));
+      final data = await (await recorder.endRecording().toImage(900, 1200)).toByteData(format: ui.ImageByteFormat.png);
+      return data!.buffer.asUint8List();
+    }))!;
+    final messages = (server.details['conv-1']!['messages'] as List).cast<Map<String, dynamic>>();
+    messages.insert(3, msg('ph', 'visitor', '[Photo]', at: messages[2]['createdAt'] as String, attachments: <Object?>[
+      <String, dynamic>{'name': 'licence-back.png', 'url': 'upload://$id', 'contentType': 'image/png'},
+    ]));
+    final c = controllerFor(server, FakeChannel());
+    await t.pumpWidget(RepaintBoundary(
+      key: const ValueKey<String>('screen'),
+      child: MaterialApp(debugShowCheckedModeBanner: false, home: GLSupportChatPage(controller: c, screen: GLSupportChatScreen.conversation('conv-1'))),
+    ));
+    Future<void> decode() async {
+      for (var i = 0; i < 3; i++) {
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 100)));
+        await t.pump(const Duration(milliseconds: 16));
+      }
+    }
+
+    for (var i = 0; i < 16; i++) {
+      await t.pump(const Duration(milliseconds: 60));
+    }
+    await decode();
+    await shoot(t, 'viewer-thread');
+    await t.tap(find.byWidgetPredicate((w) => w is SizedBox && w.width == 240), warnIfMissed: false);
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 100));
+    await shoot(t, 'viewer-flying');
+    for (var i = 0; i < 20; i++) {
+      await t.pump(const Duration(milliseconds: 16));
+    }
+    await decode();
+    await shoot(t, 'viewer');
+    final finger = await t.startGesture(const Offset(195, 420));
+    for (var i = 0; i < 5; i++) {
+      await finger.moveBy(const Offset(0, 20));
+      await t.pump(const Duration(milliseconds: 16));
+    }
+    await shoot(t, 'viewer-dragged');
+    await finger.up();
+    await t.pump(const Duration(seconds: 1));
+  }, skip: !enabled);
+
   for (final face in <String?>[null, '😞']) {
     testWidgets('article with a button and reactions ${face ?? ''}', (t) async {
       phone(t, height: 1300);
