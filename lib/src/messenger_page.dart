@@ -10,6 +10,7 @@ import 'ui/common.dart';
 import 'ui/navigation.dart';
 import 'ui/sheet.dart';
 import 'ui/tabs.dart';
+import 'ui/text_size.dart';
 
 /// Where the messenger opens.
 class GLSupportChatScreen {
@@ -290,8 +291,11 @@ class _GLSupportChatPageState extends State<GLSupportChatPage> {
     });
   }
 
+  /// Every word of the messenger at the size chosen with Aa.
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => MessengerTextScale(child: Builder(builder: _page));
+
+  Widget _page(BuildContext context) {
     final c = widget.controller;
     if (c == null) {
       _changes?.dispose();

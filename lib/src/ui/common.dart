@@ -453,9 +453,14 @@ class PressHighlight extends CustomPainter {
 /// still counts — one recogniser for all of it, so the feedback in the
 /// circle starts with the touch.
 class RoundIconButton extends StatelessWidget {
-  const RoundIconButton({super.key, required this.icon, required this.onTap, required this.tooltip, this.light = false, this.size = 36});
+  const RoundIconButton({super.key, required IconData this.icon, required this.onTap, required this.tooltip, this.light = false, this.size = 36}) : glyph = null;
 
-  final IconData icon;
+  /// Letters in the circle in place of an icon (Aa): drawn at the circle's
+  /// size whatever the text size, as an icon is.
+  const RoundIconButton.glyph({super.key, required String this.glyph, required this.onTap, required this.tooltip, this.light = false, this.size = 36}) : icon = null;
+
+  final IconData? icon;
+  final String? glyph;
   final VoidCallback onTap;
   final String tooltip;
 
@@ -499,7 +504,18 @@ class RoundIconButton extends StatelessWidget {
                   width: size,
                   height: size,
                   decoration: BoxDecoration(color: light ? on.withAlpha(on == Colors.white ? 56 : 31) : Palette.fill, shape: BoxShape.circle),
-                  child: Icon(icon, size: size * 0.5, color: light ? on : Palette.body),
+                  child: glyph == null
+                      ? Icon(icon, size: size * 0.5, color: light ? on : Palette.body)
+                      // The button's name says what it is; the letters are its icon.
+                      : ExcludeSemantics(
+                          child: Center(
+                            child: Text(
+                              glyph!,
+                              textScaler: TextScaler.noScaling,
+                              style: TextStyle(fontSize: size * 0.42, height: 1, fontWeight: FontWeight.w700, color: light ? on : Palette.body),
+                            ),
+                          ),
+                        ),
                 ),
               ),
             ),

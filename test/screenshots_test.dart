@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gl_support_chat/src/messenger_page.dart';
+import 'package:gl_support_chat/src/ui/text_size.dart';
 
 import 'support/fakes.dart';
 import 'support/gated.dart';
@@ -237,6 +238,38 @@ void main() {
     await t.pump(const Duration(milliseconds: 150));
     await shoot(t, 'home-staggered');
     await t.pump(const Duration(seconds: 1));
+  }, skip: !enabled);
+
+  // 0.4.9: Aa's sheet, then the conversation at Extra large.
+  testWidgets('text size', (t) async {
+    phone(t);
+    addTearDown(MessengerTextSize.debugReset);
+    final c = controllerFor(seeded(), FakeChannel());
+    await t.pumpWidget(RepaintBoundary(
+      key: const ValueKey<String>('screen'),
+      child: MaterialApp(debugShowCheckedModeBanner: false, home: GLSupportChatPage(controller: c)),
+    ));
+    for (var i = 0; i < 12; i++) {
+      await t.pump(const Duration(milliseconds: 60));
+    }
+    await t.tap(find.byTooltip('Text size'));
+    for (var i = 0; i < 10; i++) {
+      await t.pump(const Duration(milliseconds: 60));
+    }
+    await shoot(t, 'text-size-sheet');
+    await t.tap(find.text('Extra large'));
+    await t.pump(const Duration(milliseconds: 100));
+    await shoot(t, 'text-size-sheet-xl');
+    await t.tap(find.byTooltip('Done'));
+    for (var i = 0; i < 10; i++) {
+      await t.pump(const Duration(milliseconds: 60));
+    }
+    await shoot(t, 'home-xl');
+    await t.tap(find.text('Send us a message'));
+    for (var i = 0; i < 12; i++) {
+      await t.pump(const Duration(milliseconds: 60));
+    }
+    await shoot(t, 'conversation-xl');
   }, skip: !enabled);
 
   // 0.4.9: the photo viewer, open, and dragged part way down to close.

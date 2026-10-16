@@ -11,6 +11,7 @@ import 'package:gl_support_chat/src/messenger_page.dart';
 import 'package:gl_support_chat/src/ui/common.dart';
 import 'package:gl_support_chat/src/ui/conversation.dart';
 import 'package:gl_support_chat/src/ui/tabs.dart';
+import 'package:gl_support_chat/src/ui/text_size.dart';
 
 import 'support/fakes.dart';
 import 'support/phone.dart';
@@ -742,6 +743,67 @@ void main() {
           final bottom = tester.getRect(find.ancestor(of: find.byIcon(Icons.arrow_upward), matching: _ink).first).bottom;
           expect(bottom, lessThanOrEqualTo(phone.size.height - (keyboard ? phone.keyboard : 0) + 0.5), reason: what);
         }
+      }
+    }
+  });
+
+  testWidgets("Extra large (Aa) on top of the phone's 1.3 and 2.0, on iPhone SE, iPhone 13 and a small Android: every screen, its sheet too — nothing overflows", (tester) async {
+    addTearDown(MessengerTextSize.debugReset);
+    for (final phone in <Phone>[Phone.iphoneSE, Phone.iphone13, Phone.android360]) {
+      for (final scale in <double>[1.3, 2.0]) {
+        final what = '${phone.name}, the phone at $scale, Extra large';
+        MessengerTextSize.debugReset();
+        await tester.pumpWidget(const SizedBox());
+        server = FakeServer();
+        channel = FakeChannel();
+        server.session = <String, dynamic>{
+          ...server.session,
+          'officeHours': <String, dynamic>{'open': false, 'opensLabel': 'tomorrow at 9am', 'awayMessage': 'We are away right now.'},
+        };
+        server.articles = <Map<String, dynamic>>[
+          <String, dynamic>{'slug': 'renew-sia', 'title': 'How do I renew my SIA licence?', 'description': 'Three steps, about ten minutes.'},
+          <String, dynamic>{'slug': 'id-photo', 'title': 'Taking a good ID photo', 'description': null},
+        ];
+        server.article = <String, dynamic>{
+          'slug': 'renew-sia',
+          'title': 'How do I renew my SIA licence?',
+          'html': '<p>You can renew up to four months before it expires.</p><p><a href="https://www.get-licensed.co.uk/">Book A Course</a></p>',
+          'url': 'https://help.test/help/renew-sia',
+        };
+        MessengerTextSize.factor.value = 1.3;
+        // Home, the thread with the keyboard up and five lines typed.
+        await openThread(tester, messages: thread(6), phone: phone, textScale: scale);
+        channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 0});
+        await settle(tester, frames: 3);
+        expect(tester.takeException(), isNull, reason: '$what: the conversation');
+        expect(MediaQuery.textScalerOf(tester.element(composer())).scale(10), closeTo(10 * (scale * 1.3 > 2 ? 2 : scale * 1.3), 0.001), reason: what);
+        setKeyboard(tester, phone, phone.keyboard);
+        await tester.enterText(composer(), List<String>.filled(7, 'A line of my message').join('\n'));
+        await settle(tester, frames: 3);
+        expect(tester.takeException(), isNull, reason: '$what: the conversation, typing');
+        // Its Aa sheet.
+        setKeyboard(tester, phone, 0);
+        await tester.tap(find.descendant(of: page(), matching: find.byTooltip(TextSizeButton.label)));
+        await settle(tester);
+        expect(tester.takeException(), isNull, reason: '$what: the sheet');
+        await tester.ensureVisible(find.byTooltip('Done'));
+        await tester.tap(find.byTooltip('Done'));
+        await settle(tester);
+        // Back to the tabs: Messages, Help, an article.
+        await tester.tap(find.byTooltip('Back'));
+        await settle(tester);
+        expect(tester.takeException(), isNull, reason: '$what: Home');
+        await tester.tap(find.text('Messages').last);
+        await settle(tester);
+        expect(tester.takeException(), isNull, reason: '$what: Messages');
+        await tester.tap(find.text('Help').last);
+        await settle(tester);
+        expect(tester.takeException(), isNull, reason: '$what: Help');
+        await tester.tap(find.text('How do I renew my SIA licence?').first);
+        await settle(tester, frames: 16);
+        await tester.scrollUntilVisible(find.text('Did this answer your question?'), 200, scrollable: find.byType(Scrollable).last);
+        await settle(tester, frames: 3);
+        expect(tester.takeException(), isNull, reason: '$what: an article');
       }
     }
   });

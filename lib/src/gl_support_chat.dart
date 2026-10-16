@@ -10,6 +10,7 @@ import 'api/realtime.dart';
 import 'core/controller.dart';
 import 'core/look.dart';
 import 'core/session_store.dart';
+import 'ui/text_size.dart';
 import 'device.dart';
 import 'fallback.dart';
 import 'links.dart';
@@ -283,6 +284,8 @@ class GLSupportChat {
     WidgetsFlutterBinding.ensureInitialized();
     _lifecycle ??= _Lifecycle()..attach();
     _startPolling();
+    // The text size chosen with Aa on this phone before.
+    unawaited(MessengerTextSize.load(_store).catchError((Object _) {}));
     final product = productId.trim();
     if (!_looks.containsKey(product)) {
       unawaited(_store.look(product).then((j) {

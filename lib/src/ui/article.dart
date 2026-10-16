@@ -7,6 +7,7 @@ import '../api/models.dart';
 import 'common.dart';
 import 'navigation.dart';
 import 'sheet.dart';
+import 'text_size.dart';
 
 /// One help-centre article, drawn natively. The HTML comes from the help
 /// centre already sanitised (DOMPurify, the same as the public /help pages);
@@ -128,6 +129,7 @@ class _ArticlePageState extends State<ArticlePage> {
                         child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: Palette.text)),
                       ),
                       const SizedBox(width: 5),
+                      const TextSizeButton(size: 34),
                       RoundIconButton(icon: Icons.close, tooltip: 'Close', size: 34, onTap: () => closeMessenger(context)),
                     ],
                   ),

@@ -6,7 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// who chatted before signing in (or who never signs in) finds their
 /// conversation again; and, beside it, how the chatbot looked
 /// (`MessengerLook`), so the first open after a launch is in its colours.
-/// One of each per chatbot. An interface so tests keep it in memory.
+/// One of each per chatbot. And the text size chosen with Aa, one for the
+/// phone. An interface so tests keep it in memory.
 abstract class SessionStore {
   Future<String?> visitorId(String productId);
   Future<void> saveVisitorId(String productId, String visitorId);
@@ -15,6 +16,10 @@ abstract class SessionStore {
   /// The chatbot's look as last saved (JSON), or null.
   Future<Map<String, dynamic>?> look(String productId);
   Future<void> saveLook(String productId, Map<String, dynamic> look);
+
+  /// The multiple of the phone's text size chosen with Aa, or null.
+  Future<double?> textSize();
+  Future<void> saveTextSize(double factor);
 }
 
 class PrefsSessionStore implements SessionStore {
@@ -22,6 +27,7 @@ class PrefsSessionStore implements SessionStore {
 
   static String _key(String productId) => 'gl_support_chat.visitor.$productId';
   static String _lookKey(String productId) => 'gl_support_chat.look.$productId';
+  static const _textSizeKey = 'gl_support_chat.text_size';
 
   @override
   Future<String?> visitorId(String productId) async {
@@ -70,6 +76,24 @@ class PrefsSessionStore implements SessionStore {
       // the next launch opens in the default colours; nothing depends on it
     }
   }
+
+  @override
+  Future<double?> textSize() async {
+    try {
+      return (await SharedPreferences.getInstance()).getDouble(_textSizeKey);
+    } catch (_) {
+      return null; // nothing usable: the phone's own size
+    }
+  }
+
+  @override
+  Future<void> saveTextSize(double factor) async {
+    try {
+      await (await SharedPreferences.getInstance()).setDouble(_textSizeKey, factor);
+    } catch (_) {
+      // kept for this launch only; the next opens at the phone's own size
+    }
+  }
 }
 
 class MemorySessionStore implements SessionStore {
@@ -90,4 +114,12 @@ class MemorySessionStore implements SessionStore {
 
   @override
   Future<void> saveLook(String productId, Map<String, dynamic> look) async => _looks[productId] = look;
+
+  double? _textSize;
+
+  @override
+  Future<double?> textSize() async => _textSize;
+
+  @override
+  Future<void> saveTextSize(double factor) async => _textSize = factor;
 }

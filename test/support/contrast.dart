@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gl_support_chat/src/ui/common.dart';
 
 // The messenger's contrast, measured on what is on screen (0.4.9): every
 // word, icon and field border, against what is painted behind it there —
@@ -71,17 +72,19 @@ List<Mark> auditScreen(WidgetTester tester, {required String screen, required St
     final rect = r.localToGlobal(Offset.zero) & r.size;
     if (!rect.overlaps(view)) continue;
     if (_opacity(e) < 0.99) continue; // a placeholder holding room, or on its way in or out
+    if (_behind(e)) continue;
     final icon = _iconAbove(e);
+    final glyph = _glyphAbove(e);
     final bg = backgroundAt(e, rect.center);
     final rich = e.widget as RichText;
-    if (icon != null) {
+    if (icon != null || glyph != null) {
       final color = rich.text.style?.color;
       if (color == null) continue;
       marks.add(Mark(
         screen: screen,
         platform: platform,
         kind: MarkKind.icon,
-        what: _iconName(icon),
+        what: icon != null ? _iconName(icon) : '$glyph (${_glyphName(e)})',
         fg: color,
         bg: bg,
         exempt: _inactive(e) ? 'inactive control' : null,
@@ -98,7 +101,7 @@ List<Mark> auditScreen(WidgetTester tester, {required String screen, required St
   for (final e in find.byType(EditableText).evaluate()) {
     final w = e.widget as EditableText;
     final r = e.findRenderObject();
-    if (r is! RenderBox || !r.hasSize || w.controller.text.isEmpty) continue;
+    if (r is! RenderBox || !r.hasSize || w.controller.text.isEmpty || _behind(e)) continue;
     final color = w.style.color;
     if (color == null) continue;
     final rect = r.localToGlobal(Offset.zero) & r.size;
@@ -110,7 +113,7 @@ List<Mark> auditScreen(WidgetTester tester, {required String screen, required St
     final r = e.findRenderObject();
     if (r is! RenderBox || !r.hasSize) continue;
     final rect = r.localToGlobal(Offset.zero) & r.size;
-    if (!rect.overlaps(view) || _opacity(e) < 0.99) continue;
+    if (!rect.overlaps(view) || _opacity(e) < 0.99 || _behind(e)) continue;
     final d = w.decoration;
     final hint = d.hintText ?? d.labelText ?? 'field';
     // Outside the field: what is behind it, without its own fill.
@@ -263,6 +266,9 @@ Color? _sample(Gradient g, Rect? rect, Offset point) {
   return g.colors.last;
 }
 
+/// Under a screen or sheet opened over it: not to be read now.
+bool _behind(Element e) => !(ModalRoute.of(e)?.isCurrent ?? true);
+
 /// Every opacity above [e], multiplied.
 double _opacity(Element e) {
   var o = 1.0;
@@ -286,6 +292,30 @@ Icon? _iconAbove(Element e) {
     return found == null && ++depth < 6;
   });
   return found;
+}
+
+/// The letters a round button draws in place of an icon (Aa), if these are
+/// they: a symbol of the button, named for a screen reader by its tooltip,
+/// and held to an icon's 3:1 as the Back and Close beside it.
+String? _glyphAbove(Element e) {
+  String? found;
+  var depth = 0;
+  e.visitAncestorElements((a) {
+    final w = a.widget;
+    if (w is RoundIconButton) found = w.glyph;
+    return found == null && w is! RoundIconButton && ++depth < 80;
+  });
+  return found;
+}
+
+String _glyphName(Element e) {
+  var name = '';
+  e.visitAncestorElements((a) {
+    final w = a.widget;
+    if (w is RoundIconButton) name = w.tooltip;
+    return w is! RoundIconButton;
+  });
+  return name;
 }
 
 String _iconName(Icon icon) {

@@ -16,6 +16,7 @@ import '../core/format.dart';
 import 'common.dart';
 import 'navigation.dart';
 import 'photo_viewer.dart';
+import 'text_size.dart';
 
 /// One conversation. Without [conversationId] it is the live one — the open
 /// conversation, or a new one on the first message. With an id it is that
@@ -1318,6 +1319,7 @@ class _Header extends StatelessWidget {
                   ],
                 ),
               ),
+              const TextSizeButton(light: true, size: 32),
               RoundIconButton(icon: Icons.close, tooltip: 'Close', light: true, size: 32, onTap: () => closeMessenger(context)),
             ],
           ),
@@ -2202,7 +2204,7 @@ class _Photo extends StatelessWidget {
       // Named as the messenger's: closed with it, and with a sign-out.
       settings: const RouteSettings(name: '$messengerRoutePrefix/photo'),
       builder: (_) {
-        final viewer = PhotoViewer(photos: photos, initial: at < 0 ? 0 : at);
+        final viewer = MessengerTextScale(child: PhotoViewer(photos: photos, initial: at < 0 ? 0 : at));
         return scope == null ? viewer : _GoneOnReset(controller: scope.controller, child: viewer);
       },
     ));
@@ -3256,21 +3258,24 @@ class _ComposerState extends State<_Composer> {
       context: context,
       // Named as the messenger's: closed with it.
       routeSettings: const RouteSettings(name: '$messengerRoutePrefix/photo-source'),
-      builder: (sheet) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Photo library'),
-              onTap: () => Navigator.of(sheet).pop(ImageSource.gallery),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('Take a photo'),
-              onTap: () => Navigator.of(sheet).pop(ImageSource.camera),
-            ),
-          ],
+      // At the size chosen with Aa, as the rest of the messenger.
+      builder: (sheet) => MessengerTextScale(
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Photo library'),
+                onTap: () => Navigator.of(sheet).pop(ImageSource.gallery),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('Take a photo'),
+                onTap: () => Navigator.of(sheet).pop(ImageSource.camera),
+              ),
+            ],
+          ),
         ),
       ),
     );

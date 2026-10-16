@@ -5,6 +5,7 @@ import 'article.dart';
 import 'common.dart';
 import 'conversation.dart';
 import 'sheet.dart';
+import 'text_size.dart';
 
 /// A route for a messenger screen. It sits outside the subtree that holds the
 /// scope, so the scope and theme travel with it; its name keeps it among the
@@ -22,7 +23,7 @@ Route<void> _route(BuildContext context, String name, Widget page, {bool instant
     final screen = MessengerScope(
       controller: scope.controller,
       fallback: scope.fallback,
-      child: Theme(data: theme, child: page),
+      child: Theme(data: theme, child: MessengerTextScale(child: page)),
     );
     return sheet == null ? screen : sheet.wrap(screen);
   }

@@ -8,6 +8,7 @@ import '../core/controller.dart';
 import '../core/format.dart';
 import 'common.dart';
 import 'navigation.dart';
+import 'text_size.dart';
 
 /// Home · Messages · Help, with the bar along the bottom — Intercom's spaces.
 class MessengerTabs extends StatefulWidget {
@@ -379,6 +380,7 @@ class HomeSkeleton extends StatelessWidget {
                 const Spacer(),
                 if (look != null) TeamFaces(size: 40, team: look.team),
                 const SizedBox(width: 8),
+                const TextSizeButton(light: true),
                 RoundIconButton(icon: Icons.close, tooltip: 'Close', light: true, onTap: () => closeMessenger(context)),
               ],
             ),
@@ -530,6 +532,7 @@ class _HomeState extends State<_Home> with SingleTickerProviderStateMixin {
                     const TeamFaces(size: 40),
                     // 12 to the circle: its 44-point touch area adds 4.
                     const SizedBox(width: 8),
+                    const TextSizeButton(light: true),
                     RoundIconButton(icon: Icons.close, tooltip: 'Close', light: true, onTap: () => closeMessenger(context)),
                   ],
                 ),
@@ -1065,6 +1068,7 @@ class _TabHeader extends StatelessWidget {
       child: Row(
         children: [
           Expanded(child: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Palette.text))),
+          const TextSizeButton(size: 34),
           RoundIconButton(icon: Icons.close, tooltip: 'Close', onTap: () => closeMessenger(context), size: 34),
         ],
       ),
@@ -1212,7 +1216,8 @@ class _HelpTabState extends State<HelpTab> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text('Open the help centre', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: brand.ink)),
+                            // Wraps rather than overflow at a large text size.
+                            Flexible(child: Text('Open the help centre', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: brand.ink))),
                             const SizedBox(width: 4),
                             Icon(Icons.open_in_new, size: 14, color: brand.ink),
                           ],

@@ -7,6 +7,7 @@ import 'package:gl_support_chat/src/core/format.dart';
 import 'package:gl_support_chat/src/messenger_page.dart';
 import 'package:gl_support_chat/src/ui/common.dart';
 import 'package:gl_support_chat/src/ui/tabs.dart';
+import 'package:gl_support_chat/src/ui/text_size.dart';
 
 import 'support/contrast.dart';
 import 'support/fakes.dart';
@@ -184,6 +185,12 @@ Future<List<Mark>> _everyScreen(WidgetTester tester, TargetPlatform p, String br
     await t.tap(find.text('😞'));
   }));
   await add(_measure(tester, 'Cannot open', p, server: _seeded(brand)..authStatus = 500));
+  await add(_measure(tester, 'Text size (Aa)', p, server: _seeded(brand), steps: (t, _) async {
+    await t.tap(find.byTooltip('Text size'));
+    await settle(t, frames: 12);
+    await t.tap(find.text('Large'));
+  }));
+  MessengerTextSize.debugReset();
   return marks;
 }
 
