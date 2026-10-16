@@ -1196,7 +1196,7 @@ class _NewMessagePill extends StatelessWidget {
     // not put the keyboard away mid-sentence.
     return TextFieldTapRegion(
       child: Material(
-        color: brand.primary,
+        color: brand.surface,
         elevation: 3,
         shape: const StadiumBorder(),
         child: Pressable(
@@ -1251,7 +1251,8 @@ class _Header extends StatelessWidget {
     final team = s?.team ?? const <TeamFace>[];
     return Container(
       decoration: BoxDecoration(
-        gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [brand.primary, brand.hover]),
+        // The brand's, shaded where its words would read under 4.5:1.
+        gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [brand.surface, brand.surfaceEnd]),
       ),
       child: SafeArea(
         bottom: false,
@@ -1378,7 +1379,7 @@ class _PastFooter extends StatelessWidget {
                   child: Text('This conversation has ended', style: TextStyle(fontSize: 13, color: Palette.muted)),
                 ),
               FilledButton.icon(
-                style: FilledButton.styleFrom(backgroundColor: brand.primary, foregroundColor: brand.onPrimary, shape: const StadiumBorder()),
+                style: FilledButton.styleFrom(backgroundColor: brand.surface, foregroundColor: brand.onPrimary, shape: const StadiumBorder()),
                 onPressed: () => replaceWithLiveConversation(context),
                 icon: const Icon(Icons.send, size: 16),
                 label: const Text('Send us a message'),
@@ -1613,7 +1614,8 @@ class _Bubble extends StatelessWidget {
             Clipboard.setData(ClipboardData(text: text));
             ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Copied')));
           },
-          child: _RichText(text, color: fg, linkColor: mine ? fg : brand.primary),
+          // A link in the team's bubble reads at 7:1, as the words round it.
+          child: _RichText(text, color: fg, linkColor: mine ? fg : brand.inkOn(Palette.agentBubble, 7)),
         )),
       if (bot && meta?.articleSlug != null && context.messenger.session?.helpBaseUrl != null)
         (8, _InBubbleCard(
@@ -1653,8 +1655,10 @@ BorderRadius _corners(bool mine, _Pos pos) {
 }
 
 /// A bubble's shape and colour: the brand colour on the right for the
-/// customer, grey on the left for everyone else, its corners by its place
-/// in its group. [tight]: photos alone, edge to edge, cut to the corners.
+/// customer — shaded until their words read at 7:1 ([BrandColors.bubble]) —
+/// grey with a hairline on the left for everyone else, its corners by its
+/// place in its group. [tight]: photos alone, edge to edge, cut to the
+/// corners.
 class _BubbleBox extends StatelessWidget {
   const _BubbleBox({required this.mine, required this.children, this.pos = _Pos.single, this.tight = false});
   final bool mine;
@@ -1665,11 +1669,15 @@ class _BubbleBox extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final brand = context.brand;
+    final corners = _corners(mine, pos);
     return Container(
       constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.78),
       padding: tight ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       clipBehavior: tight ? Clip.antiAlias : Clip.none,
-      decoration: BoxDecoration(color: mine ? brand.primary : Palette.agentBubble, borderRadius: _corners(mine, pos)),
+      decoration: BoxDecoration(color: mine ? brand.bubble : Palette.agentBubble, borderRadius: corners),
+      // Drawn over, not round: the hairline takes no room, so a bubble is
+      // the size it always was.
+      foregroundDecoration: mine ? null : BoxDecoration(border: Border.all(color: Palette.bubbleEdge, width: 0.5), borderRadius: corners),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: children),
     );
   }
@@ -2009,7 +2017,7 @@ class _InBubbleCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Palette.text)),
-                        if (hint != null) Text(hint!, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: context.brand.primary)),
+                        if (hint != null) Text(hint!, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: context.brand.ink)),
                       ],
                     ),
                   ),
@@ -2629,7 +2637,7 @@ class _Chip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final brand = context.brand;
-    final fg = whatsapp ? Palette.whatsappText : brand.primary;
+    final fg = whatsapp ? Palette.whatsappText : brand.ink;
     // Dimmed while a choice is on its way, softly rather than in a frame.
     return AnimatedOpacity(
       opacity: enabled ? 1 : 0.55,
@@ -2731,6 +2739,7 @@ class _CollectBoxState extends State<_CollectBox> {
     final brand = c.brand;
     final type = widget.request.inputType;
     final error = c.collectError;
+    final lines = fieldBorders(brand, 10);
     return Padding(
       padding: const EdgeInsets.only(top: 4, bottom: 12),
       child: Column(
@@ -2748,7 +2757,7 @@ class _CollectBoxState extends State<_CollectBox> {
                     maxLength: 200,
                     onTapOutside: dismissKeyboard,
                     style: fieldText,
-                    cursorColor: brand.primary,
+                    cursorColor: brand.ink,
                     keyboardType: type == 'email' ? TextInputType.emailAddress : (type == 'tel' ? TextInputType.phone : TextInputType.text),
                     autofillHints: type == 'email'
                         ? const [AutofillHints.email]
@@ -2763,14 +2772,15 @@ class _CollectBoxState extends State<_CollectBox> {
                       labelText: widget.request.label.isEmpty ? null : widget.request.label,
                       hintText: type == 'email' ? 'name@example.com' : (type == 'tel' ? '07700 900123' : 'Type your answer…'),
                       hintStyle: const TextStyle(color: Palette.hint),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: brand.primary, width: 1.5)),
+                      border: lines.rest,
+                      enabledBorder: lines.rest,
+                      focusedBorder: lines.focused,
                     ),
                   ),
                 ),
                 const SizedBox(width: 6),
                 FilledButton(
-                  style: FilledButton.styleFrom(backgroundColor: brand.primary, foregroundColor: brand.onPrimary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                  style: FilledButton.styleFrom(backgroundColor: brand.surface, foregroundColor: brand.onPrimary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                   onPressed: c.flowBusy ? null : _submit,
                   child: const Text('Send'),
                 ),
@@ -2897,13 +2907,14 @@ class _CsatCardState extends State<CsatCard> {
                   onChanged: (_) => setState(() {}),
                   onTapOutside: dismissKeyboard,
                   style: fieldText,
-                  cursorColor: brand.primary,
+                  cursorColor: brand.ink,
                   decoration: InputDecoration(
                     hintText: 'Anything you would like to add? (optional)',
                     hintStyle: const TextStyle(color: Palette.hint),
                     counterText: '',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: brand.primary, width: 1.5)),
+                    border: fieldBorders(brand, 10).rest,
+                    enabledBorder: fieldBorders(brand, 10).rest,
+                    focusedBorder: fieldBorders(brand, 10).focused,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -2913,7 +2924,7 @@ class _CsatCardState extends State<CsatCard> {
                   // keyboard going down under the finger.
                   child: TextFieldTapRegion(
                     child: FilledButton(
-                      style: FilledButton.styleFrom(backgroundColor: brand.primary, foregroundColor: brand.onPrimary),
+                      style: FilledButton.styleFrom(backgroundColor: brand.surface, foregroundColor: brand.onPrimary),
                       onPressed: answer.commentState == 'sending' || _comment.text.trim().isEmpty ? null : () => c.comment(widget.ratingId, _comment.text),
                       child: const Text('Send'),
                     ),
@@ -3021,7 +3032,7 @@ class _EmailBarState extends State<_EmailBar> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  Text('Add email', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: brand.primary)),
+                  Text('Add email', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: brand.ink)),
                 ],
               ),
             ),
@@ -3081,21 +3092,22 @@ class _EmailBarState extends State<_EmailBar> {
                           onSubmitted: (_) => _save(),
                           onTapOutside: dismissKeyboard,
                           style: fieldText,
-                          cursorColor: brand.primary,
+                          cursorColor: brand.ink,
                           decoration: InputDecoration(
                             isDense: true,
                             hintText: 'Your email for follow-up',
                             hintStyle: const TextStyle(color: Palette.hint),
                             filled: true,
                             fillColor: Colors.white,
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFFD1D5DB))),
-                            focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: brand.primary)),
+                            border: fieldBorders(brand, 10).rest,
+                            enabledBorder: fieldBorders(brand, 10).rest,
+                            focusedBorder: fieldBorders(brand, 10).focused,
                           ),
                         ),
                       ),
                       const SizedBox(width: 8),
                       FilledButton(
-                        style: FilledButton.styleFrom(backgroundColor: brand.primary, foregroundColor: brand.onPrimary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                        style: FilledButton.styleFrom(backgroundColor: brand.surface, foregroundColor: brand.onPrimary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
                         onPressed: _saving ? null : _save,
                         child: const Text('Save'),
                       ),
@@ -3251,7 +3263,7 @@ class _ComposerState extends State<_Composer> {
                 },
                 onTapOutside: dismissKeyboard,
                 style: fieldText,
-                cursorColor: brand.primary,
+                cursorColor: brand.ink,
                 decoration: _composerDecoration(brand, 'Type a message…'),
               ),
             ),
@@ -3348,7 +3360,7 @@ class _SendCircle extends StatelessWidget {
           builder: (_, t, __) => Ink(
             width: size,
             height: size,
-            decoration: BoxDecoration(color: Color.lerp(Palette.fill, brand.primary, t), shape: BoxShape.circle),
+            decoration: BoxDecoration(color: Color.lerp(Palette.fill, brand.surface, t), shape: BoxShape.circle),
             child: Icon(Icons.arrow_upward, size: 20, color: Color.lerp(Palette.faint, brand.onPrimary, t)),
           ),
         ),
@@ -3367,10 +3379,12 @@ InputDecoration _composerDecoration(BrandColors brand, String hint, {bool enable
       fillColor: Palette.input,
       enabled: enabled,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.border)),
-      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.border)),
+      // Its edge at 3:1, so the box can be found; the locked one's stays
+      // faint: there is nothing to type in it.
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.field)),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.field)),
       disabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: const BorderSide(color: Palette.border)),
-      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide(color: brand.primary)),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide(color: brand.ink)),
     );
 
 /// The composer while typing waits on something above — a button to

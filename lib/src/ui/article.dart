@@ -250,7 +250,7 @@ class _ArticleBody extends StatelessWidget {
           customStylesBuilder: (element) {
             switch (element.localName) {
               case 'a':
-                return <String, String>{'color': brand.hex, 'text-decoration': 'underline'};
+                return <String, String>{'color': brand.inkHex, 'text-decoration': 'underline'};
               // Smaller than the article's 22-point title, as headings
               // inside it should be (they were about 30).
               case 'h1':
@@ -297,9 +297,9 @@ class _ArticleBody extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // Wraps rather than overflow at a large text size.
-                  Flexible(child: Text('Open in the help centre', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: brand.primary))),
+                  Flexible(child: Text('Open in the help centre', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: brand.ink))),
                   const SizedBox(width: 4),
-                  Icon(Icons.open_in_new, size: 14, color: brand.primary),
+                  Icon(Icons.open_in_new, size: 14, color: brand.ink),
                 ],
               ),
             ),
@@ -327,7 +327,7 @@ class ArticleButton extends StatelessWidget {
         alignment: Alignment.centerLeft,
         child: FilledButton(
           style: FilledButton.styleFrom(
-            backgroundColor: brand.primary,
+            backgroundColor: brand.surface,
             foregroundColor: brand.onPrimary,
             minimumSize: const Size(RoundIconButton.minTarget, RoundIconButton.minTarget),
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -392,7 +392,7 @@ class ArticleReactions extends StatelessWidget {
                   const SizedBox(height: 10),
                   FilledButton.icon(
                     style: FilledButton.styleFrom(
-                      backgroundColor: brand.primary,
+                      backgroundColor: brand.surface,
                       foregroundColor: brand.onPrimary,
                       minimumSize: const Size(RoundIconButton.minTarget, RoundIconButton.minTarget),
                       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),

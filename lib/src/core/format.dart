@@ -2,6 +2,7 @@
 // and rules are the website messenger's, so the app
 // and the website say the same thing.
 
+import 'dart:math' as math;
 import 'dart:ui' show Color;
 
 import '../api/models.dart';
@@ -139,44 +140,139 @@ String previewLine(ConversationSummary c) {
 }
 
 /// The chatbot's colour and the shades the design derives from it — the
-/// website messenger's formulas, so both look the same.
+/// website messenger's formulas, so both look the same — and the shades
+/// that keep words and icons readable on it and in it (0.4.9): each is the
+/// brand colour itself when that already reads, else moved just as far as
+/// it must, never further.
 ///
 /// The channels are kept as integers rather than read back from [Color],
 /// whose accessors changed between Flutter 3.24 and 3.27.
 class BrandColors {
   factory BrandColors(String? hex) {
     final rgb = parseHexRgb(hex) ?? (r: 0x63, g: 0x66, b: 0xF1);
-    return BrandColors._(rgb.r, rgb.g, rgb.b);
+    return BrandColors._(rgb);
   }
-  BrandColors._(this._r, this._g, this._b);
+  BrandColors._(this._rgb);
 
-  final int _r;
-  final int _g;
-  final int _b;
+  final _Rgb _rgb;
 
-  Color get primary => Color.fromARGB(255, _r, _g, _b);
+  Color get primary => _color(_rgb);
 
   /// `#rrggbb`, for the article's CSS.
-  String get hex => '#${((_r << 16) | (_g << 8) | _b).toRadixString(16).padLeft(6, '0')}';
-  Color get soft => _lighten(0.18);
-  Color get hover => _darken(0.10);
-  Color get light => _lighten(0.92);
-  Color get ring => Color.fromARGB(46, _r, _g, _b); // 0.18
+  String get hex => _hexOf(_rgb);
 
-  /// White on the brand colour unless the brand colour is very light.
-  Color get onPrimary => primary.computeLuminance() > 0.6 ? const Color(0xFF111827) : const Color(0xFFFFFFFF);
+  /// [ink] as `#rrggbb`, for the article's links.
+  String get inkHex => _hexOf(_ink);
 
-  Color _lighten(double amount) {
-    int up(int x) => x + ((255 - x) * amount).round();
-    return Color.fromARGB(255, up(_r), up(_g), up(_b));
+  Color get soft => _color(_soft);
+  Color get hover => _color(_hover);
+  Color get light => _color(_light);
+  Color get ring => Color.fromARGB(46, _rgb.r, _rgb.g, _rgb.b); // 0.18
+
+  _Rgb get _soft => _mix(_rgb, _whiteRgb, 0.18);
+  _Rgb get _light => _mix(_rgb, _whiteRgb, 0.92);
+  _Rgb get _hover {
+    const step = 26; // 10% of 255
+    int down(int x) => x - step < 0 ? 0 : x - step;
+    return (r: down(_rgb.r), g: down(_rgb.g), b: down(_rgb.b));
   }
 
-  Color _darken(double amount) {
-    final step = (255 * amount).round();
-    int down(int x) => x - step < 0 ? 0 : x - step;
-    return Color.fromARGB(255, down(_r), down(_g), down(_b));
+  /// Words and icons on the brand colour: white or near-black, whichever
+  /// reads better on it — by contrast, not by how light it is: a mid teal
+  /// read 2.5:1 in white, the old luminance rule's choice, and 7:1 in
+  /// near-black.
+  late final Color onPrimary = _color(_on);
+  late final _Rgb _on = _ratio(_whiteRgb, _rgb) >= _ratio(_nearBlack, _rgb) ? _whiteRgb : _nearBlack;
+
+  /// The brand colour under words and icons — a button, the header, a
+  /// face's circle: as it is when [onPrimary] reads on it at 4.5:1, else
+  /// moved away from [onPrimary] until it does (the default indigo, 4.47:1
+  /// under white, by 1%).
+  late final Color surface = _color(_fit(_rgb, 4.5));
+
+  /// The header's and Home's band's lower end: [hover], fitted the same way
+  /// (darker reads worse under near-black words).
+  late final Color surfaceEnd = _color(_fit(_hover, 4.5));
+
+  /// Home's band at the top: [soft], fitted the same way. On a mid brand
+  /// colour it comes back to the colour itself: the greeting is on it.
+  late final Color surfaceTop = _color(_fit(_soft, 4.5));
+
+  /// The customer's own bubbles: the brand colour moved until their words
+  /// read at 7:1, as every message's do (#1F6FEB by a quarter, darker).
+  late final Color bubble = _color(_fit(_rgb, 7));
+
+  /// The brand colour as ink on white — a chip's words, a link, an icon, a
+  /// focused field's line: darkened until it reads at 4.5:1 on white, on
+  /// [light] (a chip's fill) and on the pale grey of a card in a bubble.
+  late final Color ink = _color(_ink);
+  late final _Rgb _ink = _darkenUntil(_luminance(_light) < _luminance(_paleGrey) ? _light : _paleGrey, 4.5);
+
+  /// The brand colour darkened until it reads at [goal]:1 on [background]
+  /// and on white: a link in a teammate's bubble reads as the words around
+  /// it do.
+  Color inkOn(Color background, double goal) {
+    final bg = background.computeLuminance();
+    for (var step = 0; step <= 100; step++) {
+      final c = _mix(_rgb, _blackRgb, step / 100);
+      if (_ratioL(_luminance(c), bg) >= goal && _ratio(c, _whiteRgb) >= goal) return _color(c);
+    }
+    return _color(_blackRgb);
+  }
+
+  _Rgb _darkenUntil(_Rgb background, double goal) {
+    for (var step = 0; step <= 100; step++) {
+      final c = _mix(_rgb, _blackRgb, step / 100);
+      if (_ratio(c, background) >= goal && _ratio(c, _whiteRgb) >= goal) return c;
+    }
+    return _blackRgb;
+  }
+
+  /// [c] moved away from [onPrimary] — darker under white, lighter under
+  /// near-black — in 1% steps, until [onPrimary] reads on it at [goal]:1.
+  _Rgb _fit(_Rgb c, double goal) {
+    final away = _on == _whiteRgb ? _blackRgb : _whiteRgb;
+    for (var step = 0; step <= 100; step++) {
+      final shade = _mix(c, away, step / 100);
+      if (_ratio(_on, shade) >= goal) return shade;
+    }
+    return away;
   }
 }
+
+typedef _Rgb = ({int r, int g, int b});
+
+const _Rgb _whiteRgb = (r: 255, g: 255, b: 255);
+const _Rgb _blackRgb = (r: 0, g: 0, b: 0);
+const _Rgb _nearBlack = (r: 0x11, g: 0x18, b: 0x27); // Palette.text
+const _Rgb _paleGrey = (r: 0xF9, g: 0xFA, b: 0xFB); // Palette.input
+
+Color _color(_Rgb c) => Color.fromARGB(255, c.r, c.g, c.b);
+
+String _hexOf(_Rgb c) => '#${((c.r << 16) | (c.g << 8) | c.b).toRadixString(16).padLeft(6, '0')}';
+
+/// [a] mixed [t] of the way to [b].
+_Rgb _mix(_Rgb a, _Rgb b, double t) {
+  int at(int p, int q) => (p + (q - p) * t).round();
+  return (r: at(a.r, b.r), g: at(a.g, b.g), b: at(a.b, b.b));
+}
+
+/// WCAG 2's relative luminance, from the channels.
+double _luminance(_Rgb c) {
+  double lin(int v) {
+    final x = v / 255;
+    return x <= 0.03928 ? x / 12.92 : math.pow((x + 0.055) / 1.055, 2.4).toDouble();
+  }
+
+  return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+}
+
+double _ratio(_Rgb a, _Rgb b) => _ratioL(_luminance(a), _luminance(b));
+
+double _ratioL(double x, double y) => x > y ? (x + 0.05) / (y + 0.05) : (y + 0.05) / (x + 0.05);
+
+/// WCAG 2 contrast of two opaque colours, 1 to 21.
+double wcagContrast(Color a, Color b) => _ratioL(a.computeLuminance(), b.computeLuminance());
 
 ({int r, int g, int b})? parseHexRgb(String? hex) {
   final m = RegExp(r'^#?([0-9a-fA-F]{6})$').firstMatch((hex ?? '').trim());

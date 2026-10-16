@@ -124,7 +124,8 @@ class _MessengerSelectorState<T> extends State<MessengerSelector<T>> {
   Widget build(BuildContext context) => QuietScope(child: Builder(builder: (context) => widget.builder(context, _value)));
 }
 
-/// Neutral colours, the website messenger's.
+/// Neutral colours, the website messenger's, darkened where they read
+/// under their WCAG target on the phone (0.4.9; test/contrast_test.dart).
 class Palette {
   static const text = Color(0xFF111827);
   static const prose = Color(0xFF1F2937);
@@ -138,18 +139,34 @@ class Palette {
 
   /// Decoration only (the typing dots), never words: 2.5:1 on white.
   static const faint = Color(0xFF9CA3AF);
+  /// Dividers and cards: decoration, not the edge of something to use.
   static const border = Color(0xFFE5E7EB);
+
+  /// The edge of a field to type in: 3.3:1 on white, 3.2:1 on [input], so
+  /// the box can be found (WCAG 1.4.11). [border] was 1.2:1.
+  static const field = Color(0xFF878E99);
   static const fill = Color(0xFFF3F4F6);
   static const page = Color(0xFFF5F6F7);
   static const input = Color(0xFFF9FAFB);
-  static const agentBubble = Color(0xFFF1F2F4);
-  static const danger = Color(0xFFEF4444);
+  /// The team's bubbles: a shade darker than 0.4.8's (1.12:1 on the white
+  /// thread, which washed out in daylight), with [bubbleEdge] round it.
+  static const agentBubble = Color(0xFFE9EBEE);
+
+  /// A hairline round the team's bubbles, so each reads as a shape.
+  static const bubbleEdge = Color(0xFFD5D9DF);
+
+  /// Unread dots, the tab's count, "New messages": white reads on it, and
+  /// it reads on white, at 4.8:1 (0.4.8's red was 3.8:1).
+  static const danger = Color(0xFFDC2626);
   static const error = Color(0xFFB91C1C);
-  static const success = Color(0xFF059669);
+
+  /// "We'll follow up at…": 5.5:1 on white (0.4.8's green was 3.8:1).
+  static const success = Color(0xFF047857);
   static const online = Color(0xFF34D399);
   static const away = Color(0xFF9CA3AF);
   static const whatsapp = Color(0xFF25D366);
-  static const whatsappText = Color(0xFF128C7E);
+  /// WhatsApp's own dark green, for words: 7.7:1 on white (its teal was 4.1:1).
+  static const whatsappText = Color(0xFF075E54);
 }
 
 /// The messenger's own theme, so the app's theme cannot restyle it.
@@ -162,6 +179,10 @@ class Palette {
 /// Ink is the platform's: on Android a ripple, InkRipple — not Material 3's
 /// sparkle, whose shader is compiled the first time it is drawn, a dropped
 /// frame on the first tap; on iOS no ripple (iOS controls do not ripple).
+///
+/// The theme's primary is the brand's [BrandColors.ink], which reads on
+/// white at 4.5:1 (a text button's words, a spinner); a button that has the
+/// keyboard's focus is ringed in it (Flutter's own focus tint was 1.3:1).
 ThemeData messengerTheme(BuildContext context, BrandColors brand) {
   final host = Theme.of(context);
   final cached = _themeCache;
@@ -174,8 +195,8 @@ ThemeData messengerTheme(BuildContext context, BrandColors brand) {
     useMaterial3: host.useMaterial3,
     colorScheme: ColorScheme.fromSeed(
       seedColor: brand.primary,
-      primary: brand.primary,
-      onPrimary: brand.onPrimary,
+      primary: brand.ink,
+      onPrimary: Colors.white,
       surface: Colors.white,
       onSurface: Palette.text,
       brightness: Brightness.light,
@@ -185,15 +206,29 @@ ThemeData messengerTheme(BuildContext context, BrandColors brand) {
     visualDensity: host.visualDensity,
     scaffoldBackgroundColor: Colors.white,
     canvasColor: Colors.white,
-    textSelectionTheme: TextSelectionThemeData(cursorColor: brand.primary, selectionHandleColor: brand.primary),
+    textSelectionTheme: TextSelectionThemeData(cursorColor: brand.ink, selectionHandleColor: brand.ink),
     progressIndicatorTheme: ProgressIndicatorThemeData(color: brand.primary),
     inputDecorationTheme: const InputDecorationTheme(hintStyle: TextStyle(color: Palette.hint)),
+    filledButtonTheme: FilledButtonThemeData(style: ButtonStyle(side: focusRing(brand))),
+    textButtonTheme: TextButtonThemeData(style: ButtonStyle(side: focusRing(brand))),
   );
   _themeCache = (host: host, brand: brand.hex, theme: theme);
   return theme;
 }
 
 ({ThemeData host, String brand, ThemeData theme})? _themeCache;
+
+/// A button's line while the keyboard's focus is on it: 2 points of the
+/// brand's ink, 4.5:1 on white or more; none otherwise.
+WidgetStateProperty<BorderSide?> focusRing(BrandColors brand) =>
+    WidgetStateProperty.resolveWith((states) => states.contains(WidgetState.focused) ? BorderSide(color: brand.ink, width: 2) : null);
+
+/// A field's line: [Palette.field] at rest, the brand's ink with the
+/// keyboard in it, rounded [radius].
+({InputBorder rest, InputBorder focused}) fieldBorders(BrandColors brand, double radius) => (
+      rest: OutlineInputBorder(borderRadius: BorderRadius.circular(radius), borderSide: const BorderSide(color: Palette.field)),
+      focused: OutlineInputBorder(borderRadius: BorderRadius.circular(radius), borderSide: BorderSide(color: brand.ink, width: 1.5)),
+    );
 
 /// What every text field in the messenger types in: the messenger's ink,
 /// whatever the app's theme says.
@@ -242,6 +277,10 @@ Future<void> openExternal(BuildContext context, Uri uri) async {
 ///
 /// One gesture recogniser for the whole of it: feedback never waits for a
 /// second one on the same spot to give up.
+///
+/// With the keyboard's focus on it (a keyboard, Switch Access) it is ringed
+/// in the brand's ink, 2 points (white on the brand colour): 3:1 or more
+/// against what is round it, where Flutter's own focus tint was 1.3:1.
 class Pressable extends StatefulWidget {
   const Pressable({super.key, required this.onTap, required this.child, this.shape = const RoundedRectangleBorder(), this.onBrand = false, this.inner});
 
@@ -274,10 +313,17 @@ class _PressableState extends State<Pressable> with SingleTickerProviderStateMix
     animationBehavior: AnimationBehavior.preserve,
   );
 
+  /// The keyboard's focus is on it.
+  bool _focused = false;
+
   @override
   void dispose() {
     _down.dispose();
     super.dispose();
+  }
+
+  void _focus(bool focused) {
+    if (focused != _focused && mounted) setState(() => _focused = focused);
   }
 
   /// Down: from where it is, or a frame in — the finger came down before
@@ -294,32 +340,39 @@ class _PressableState extends State<Pressable> with SingleTickerProviderStateMix
     // Read, not watched: whoever builds this is built again with the brand.
     final brand = context.getInheritedWidgetOfExactType<MessengerScope>()?.controller.brand;
     final splash = !ios ? (widget.onBrand ? Colors.white.withAlpha(61) : brand?.ring) : Colors.transparent;
-    final child = !ios
-        ? widget.child
-        : CustomPaint(
-            foregroundPainter: PressHighlight(_down, shape: widget.shape, inner: widget.inner, onBrand: widget.onBrand),
-            child: widget.child,
-          );
+    // The ring only for a keyboard's focus, not after a touch.
+    final keyboard = _focused && FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
+    final ring = !keyboard ? null : (widget.onBrand ? brand?.onPrimary : brand?.ink) ?? Palette.text;
+    // On Android the highlight never comes (the ripple is the press); the
+    // painter is there for the ring, the same tree on both.
+    final child = CustomPaint(
+      foregroundPainter: PressHighlight(_down, shape: widget.shape, inner: widget.inner, onBrand: widget.onBrand, ring: ring),
+      child: widget.child,
+    );
     final inner = widget.inner;
     if (inner != null) {
       return _InnerInk(
         inner: inner,
         onTap: widget.onTap,
         onHighlightChanged: ios ? _pressed : null,
+        onFocusChange: _focus,
         customBorder: widget.shape,
         splashFactory: ios ? NoSplash.splashFactory : InkRipple.splashFactory,
         splashColor: splash,
         highlightColor: Colors.transparent,
+        focusColor: Colors.transparent,
         child: child,
       );
     }
     return InkWell(
       onTap: widget.onTap,
       onHighlightChanged: ios ? _pressed : null,
+      onFocusChange: _focus,
       customBorder: widget.shape,
       splashFactory: ios ? NoSplash.splashFactory : InkRipple.splashFactory,
       splashColor: splash,
       highlightColor: Colors.transparent,
+      focusColor: Colors.transparent,
       child: child,
     );
   }
@@ -331,10 +384,12 @@ class _InnerInk extends InkWell {
     required this.inner,
     super.onTap,
     super.onHighlightChanged,
+    super.onFocusChange,
     super.customBorder,
     super.splashFactory,
     super.splashColor,
     super.highlightColor,
+    super.focusColor,
     super.child,
   });
 
@@ -345,28 +400,42 @@ class _InnerInk extends InkWell {
 }
 
 /// iOS's press highlight: [amount] of black 8% (white 15% on the brand
-/// colour) over [shape], in [inner] when given.
+/// colour) over [shape], in [inner] when given; and, with the keyboard's
+/// focus on it, a 2-point [ring] just inside the shape.
 class PressHighlight extends CustomPainter {
-  PressHighlight(this.amount, {required this.shape, this.inner, this.onBrand = false}) : super(repaint: amount);
+  PressHighlight(this.amount, {required this.shape, this.inner, this.onBrand = false, this.ring}) : super(repaint: amount);
 
   final Animation<double> amount;
   final ShapeBorder shape;
   final Size? inner;
   final bool onBrand;
+  final Color? ring;
+
+  static const ringWidth = 2.0;
 
   @override
   void paint(Canvas canvas, Size size) {
     final t = amount.value;
-    if (t <= 0) return;
     final box = Offset.zero & size;
     final rect = inner == null ? box : Alignment.center.inscribe(inner!, box);
-    // The channels as integers: Color's accessors changed between Flutter 3.24 and 3.27.
-    final paint = Paint()..color = onBrand ? Color.fromARGB((38 * t).round(), 255, 255, 255) : Color.fromARGB((20 * t).round(), 0, 0, 0);
-    canvas.drawPath(shape.getOuterPath(rect), paint);
+    if (t > 0) {
+      // The channels as integers: Color's accessors changed between Flutter 3.24 and 3.27.
+      final paint = Paint()..color = onBrand ? Color.fromARGB((38 * t).round(), 255, 255, 255) : Color.fromARGB((20 * t).round(), 0, 0, 0);
+      canvas.drawPath(shape.getOuterPath(rect), paint);
+    }
+    final r = ring;
+    if (r != null) {
+      final stroke = Paint()
+        ..color = r
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = ringWidth;
+      canvas.drawPath(shape.getOuterPath(rect.deflate(ringWidth / 2)), stroke);
+    }
   }
 
   @override
-  bool shouldRepaint(PressHighlight old) => old.amount != amount || old.shape != shape || old.inner != inner || old.onBrand != onBrand;
+  bool shouldRepaint(PressHighlight old) =>
+      old.amount != amount || old.shape != shape || old.inner != inner || old.onBrand != onBrand || old.ring != ring;
 }
 
 /// A round icon button (close, back) on the brand header or a white page.
@@ -382,7 +451,8 @@ class RoundIconButton extends StatelessWidget {
   final VoidCallback onTap;
   final String tooltip;
 
-  /// White on the brand colour (true) or dark on grey (false).
+  /// On the brand colour, in its [BrandColors.onPrimary] — white, or
+  /// near-black on a pale brand (true); or dark on grey (false).
   final bool light;
   final double size;
 
@@ -392,6 +462,8 @@ class RoundIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final target = size < minTarget ? minTarget : size;
+    // Read, not watched: whoever builds this is built again with the brand.
+    final on = context.getInheritedWidgetOfExactType<MessengerScope>()?.controller.brand.onPrimary ?? Colors.white;
     return Semantics(
       button: true,
       label: tooltip,
@@ -418,8 +490,8 @@ class RoundIconButton extends StatelessWidget {
                 child: Ink(
                   width: size,
                   height: size,
-                  decoration: BoxDecoration(color: light ? Colors.white.withAlpha(56) : Palette.fill, shape: BoxShape.circle),
-                  child: Icon(icon, size: size * 0.5, color: light ? Colors.white : Palette.body),
+                  decoration: BoxDecoration(color: light ? on.withAlpha(on == Colors.white ? 56 : 31) : Palette.fill, shape: BoxShape.circle),
+                  child: Icon(icon, size: size * 0.5, color: light ? on : Palette.body),
                 ),
               ),
             ),
@@ -496,7 +568,7 @@ class InitialAvatar extends StatelessWidget {
       width: size,
       height: size,
       alignment: Alignment.center,
-      decoration: BoxDecoration(color: brand.primary, shape: BoxShape.circle),
+      decoration: BoxDecoration(color: brand.surface, shape: BoxShape.circle),
       child: icon != null ? Icon(icon, size: size * 0.55, color: brand.onPrimary) : letter(brand, label, size),
     );
   }
@@ -554,7 +626,7 @@ class LogoAvatar extends StatelessWidget {
       height: size,
       alignment: Alignment.center,
       clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(color: brand.primary, shape: BoxShape.circle),
+      decoration: BoxDecoration(color: brand.surface, shape: BoxShape.circle),
       child: logo == null
           ? InitialAvatar.letter(brand, label, size)
           : Padding(

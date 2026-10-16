@@ -67,11 +67,11 @@ class _MessengerTabsState extends State<MessengerTabs> {
               (states) => TextStyle(
                 fontSize: 13,
                 fontWeight: states.contains(WidgetState.selected) ? FontWeight.w600 : FontWeight.w500,
-                color: states.contains(WidgetState.selected) ? brand.primary : const Color(0xFF4B5563),
+                color: states.contains(WidgetState.selected) ? brand.ink : const Color(0xFF4B5563),
               ),
             ),
             iconTheme: WidgetStateProperty.resolveWith(
-              (states) => IconThemeData(color: states.contains(WidgetState.selected) ? brand.primary : const Color(0xFF4B5563)),
+              (states) => IconThemeData(color: states.contains(WidgetState.selected) ? brand.ink : const Color(0xFF4B5563)),
             ),
           ),
           child: NavigationBar(
@@ -298,7 +298,8 @@ class HomeTab extends StatelessWidget {
   }
 }
 
-/// The brand band behind the top of Home, fading into the page.
+/// The brand band behind the top of Home, fading into the page: its
+/// colours shaded where the greeting on them would read under 4.5:1.
 class _Band extends StatelessWidget {
   const _Band({required this.child});
   final Widget child;
@@ -316,7 +317,7 @@ class _Band extends StatelessWidget {
               gradient: LinearGradient(
                 begin: const Alignment(-0.17, -1),
                 end: const Alignment(0.17, 1),
-                colors: [brand.soft, brand.primary, brand.hover],
+                colors: [brand.surfaceTop, brand.surface, brand.surfaceEnd],
                 stops: const [0, 0.58, 1],
               ),
             ),
@@ -344,8 +345,10 @@ class _Band extends StatelessWidget {
 }
 
 const _homePadding = EdgeInsets.fromLTRB(20, 18, 20, 24);
-const _greetingStyle = TextStyle(fontSize: 29, height: 1.18, fontWeight: FontWeight.w700, color: Colors.white, letterSpacing: -0.4);
-const _subtitleStyle = TextStyle(fontSize: 15, height: 1.45, color: Color(0xEBFFFFFF));
+/// On the band, in the brand's [BrandColors.onPrimary]: white, or
+/// near-black on a pale brand colour (white on it read 1.7:1).
+const _greetingStyle = TextStyle(fontSize: 29, height: 1.18, fontWeight: FontWeight.w700, letterSpacing: -0.4);
+const _subtitleStyle = TextStyle(fontSize: 15, height: 1.45);
 const _sendTitleStyle = TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Palette.text);
 const _statusStyle = TextStyle(fontSize: 14, color: Palette.muted);
 
@@ -381,12 +384,12 @@ class HomeSkeleton extends StatelessWidget {
             ),
             const SizedBox(height: 34),
             if (known)
-              Text(greeting(name: name, chatbotGreeting: look?.greeting), style: _greetingStyle)
+              Text(greeting(name: name, chatbotGreeting: look?.greeting), style: _greetingStyle.copyWith(color: c.brand.onPrimary))
             else
               const TextBar(style: _greetingStyle, width: 190, onBrand: true),
             if (subtitle.isNotEmpty) ...[
               const SizedBox(height: 10),
-              Text(subtitle, style: _subtitleStyle),
+              Text(subtitle, style: _subtitleStyle.copyWith(color: c.brand.onPrimary)),
             ],
             const SizedBox(height: 26),
             // What a screen reader hears for the cards still to come.
@@ -531,10 +534,10 @@ class _HomeState extends State<_Home> with SingleTickerProviderStateMixin {
                   ],
                 ),
                 const SizedBox(height: 34),
-                Text(greetingFor(s), style: _greetingStyle),
+                Text(greetingFor(s), style: _greetingStyle.copyWith(color: brand.onPrimary)),
                 if (subtitle.isNotEmpty) ...[
                   const SizedBox(height: 10),
-                  Text(subtitle, style: _subtitleStyle),
+                  Text(subtitle, style: _subtitleStyle.copyWith(color: brand.onPrimary)),
                 ],
               ],
             ),
@@ -570,7 +573,7 @@ class _HomeState extends State<_Home> with SingleTickerProviderStateMixin {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  Icon(Icons.send, size: 22, color: brand.primary),
+                  Icon(Icons.send, size: 22, color: brand.ink),
                 ],
               ),
             ),
@@ -605,7 +608,7 @@ class _Logo extends StatelessWidget {
       ),
       child: Text(
         label.isEmpty ? 'S' : label.characters.first.toUpperCase(),
-        style: TextStyle(color: brand.primary, fontSize: 18, fontWeight: FontWeight.w800),
+        style: TextStyle(color: brand.ink, fontSize: 18, fontWeight: FontWeight.w800),
       ),
     );
     final logo = url;
@@ -661,7 +664,7 @@ class _RecentCard extends StatelessWidget {
                 Container(width: 8, height: 8, decoration: const BoxDecoration(color: Palette.danger, shape: BoxShape.circle)),
               ],
               const SizedBox(width: 4),
-              Icon(Icons.chevron_right, color: context.brand.primary),
+              Icon(Icons.chevron_right, color: context.brand.ink),
             ],
           ),
         ],
@@ -792,7 +795,7 @@ class _HomeHelpCardState extends State<_HomeHelpCard> with SingleTickerProviderS
                     child: Row(
                       children: [
                         Expanded(child: Text(shown[i].title, style: const TextStyle(fontSize: 15, height: 1.4, color: Palette.body))),
-                        Icon(Icons.chevron_right, size: 18, color: brand.primary),
+                        Icon(Icons.chevron_right, size: 18, color: brand.ink),
                       ],
                     ),
                   ),
@@ -825,7 +828,7 @@ class _HomeHelpCardState extends State<_HomeHelpCard> with SingleTickerProviderS
                     const Expanded(
                       child: Text('Search for help', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Color(0xFF1F2937))),
                     ),
-                    Icon(Icons.search, size: 20, color: brand.primary),
+                    Icon(Icons.search, size: 20, color: brand.ink),
                   ],
                 ),
               ),
@@ -886,7 +889,7 @@ class MessagesTab extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.chat_bubble_outline, size: 40, color: brand.primary),
+              Icon(Icons.chat_bubble_outline, size: 40, color: brand.ink),
               const SizedBox(height: 14),
               const Text('No messages', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: Palette.text)),
               const SizedBox(height: 6),
@@ -980,7 +983,7 @@ class MessagesTab extends StatelessWidget {
                   child: Center(
                     child: FilledButton.icon(
                       style: FilledButton.styleFrom(
-                        backgroundColor: brand.primary,
+                        backgroundColor: brand.surface,
                         foregroundColor: brand.onPrimary,
                         padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
                         shape: const StadiumBorder(),
@@ -1142,15 +1145,19 @@ class _HelpTabState extends State<HelpTab> {
               onTapOutside: dismissKeyboard,
               textInputAction: TextInputAction.search,
               style: fieldText,
-              cursorColor: brand.primary,
+              cursorColor: brand.ink,
               decoration: InputDecoration(
                 hintText: 'Search for help',
                 hintStyle: const TextStyle(color: Palette.hint),
                 filled: true,
-                fillColor: const Color(0xFFF1F3F4),
-                suffixIcon: Icon(Icons.search, color: brand.primary),
+                // The composer's pale grey: its edge reads on it at 3:1.
+                fillColor: Palette.input,
+                suffixIcon: Icon(Icons.search, color: brand.ink),
                 contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                // An edge at 3:1: the grey alone was 1.1:1 on white.
+                border: fieldBorders(brand, 12).rest,
+                enabledBorder: fieldBorders(brand, 12).rest,
+                focusedBorder: fieldBorders(brand, 12).focused,
               ),
             ),
           ),
@@ -1191,7 +1198,7 @@ class _HelpTabState extends State<HelpTab> {
                                 ],
                               ),
                             ),
-                            Icon(Icons.chevron_right, size: 18, color: brand.primary),
+                            Icon(Icons.chevron_right, size: 18, color: brand.ink),
                           ],
                         ),
                       ),
@@ -1205,9 +1212,9 @@ class _HelpTabState extends State<HelpTab> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text('Open the help centre', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: brand.primary)),
+                            Text('Open the help centre', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: brand.ink)),
                             const SizedBox(width: 4),
-                            Icon(Icons.open_in_new, size: 14, color: brand.primary),
+                            Icon(Icons.open_in_new, size: 14, color: brand.ink),
                           ],
                         ),
                       ),
