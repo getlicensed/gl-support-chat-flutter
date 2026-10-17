@@ -138,8 +138,8 @@ class FakeChannel implements RealtimeChannel {
   void dispose() {}
 }
 
-/// A controller wired to [server] and [channel].
-MessengerController controllerFor(FakeServer server, FakeChannel channel, {List<int>? unread}) {
+/// A controller wired to [server] and [channel] — on a pretend [clock], if given.
+MessengerController controllerFor(FakeServer server, FakeChannel channel, {List<int>? unread, DateTime Function()? clock}) {
   final api = server.api();
   api.reauthenticate = () async => (await api.authenticate()).token;
   return MessengerController(
@@ -147,6 +147,7 @@ MessengerController controllerFor(FakeServer server, FakeChannel channel, {List<
     signIn: () => api.authenticate(visitorId: 'visitor-1'),
     realtimeFactory: ({required String apiUrl, required String Function() token}) => channel,
     onUnreadChanged: unread?.add,
+    clock: clock,
   );
 }
 

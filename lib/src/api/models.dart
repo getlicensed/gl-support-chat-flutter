@@ -392,20 +392,59 @@ class ConversationDetail {
   }
 }
 
+/// What the chatbot's workflow is doing in the open conversation, as the
+/// server says it (since 17 Oct: GET /widget/messages `flow`, and the
+/// `flow:update` event). No workflow running is null, not one of these.
+class FlowState {
+  const FlowState({this.awaiting, this.letCustomerType = false, this.workingUntil});
+
+  /// `choice`: its buttons wait for a tap. `answer`: a detail it asked for
+  /// waits. Null: it is working between steps (typing, a wait step).
+  final String? awaiting;
+
+  /// On `choice`: this path lets the customer type instead of tapping.
+  final bool letCustomerType;
+
+  /// While working: if nothing has changed by then, the customer may type
+  /// again. Null when the server did not say.
+  final DateTime? workingUntil;
+
+  bool get working => awaiting == null;
+
+  static FlowState? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final j = Map<String, dynamic>.from(raw);
+    return FlowState(
+      awaiting: _str(j['awaiting']),
+      letCustomerType: _bool(j['letCustomerType']),
+      workingUntil: _dateOrNull(j['workingUntil']),
+    );
+  }
+}
+
 /// GET /widget/messages, read only for what the native screens need: which
-/// conversation is the open one, its unread count, and a CSAT question left
-/// from a conversation that has since closed.
+/// conversation is the open one, its unread count, a CSAT question left
+/// from a conversation that has since closed, and what its workflow is doing.
 class OpenConversationInfo {
-  const OpenConversationInfo({this.conversationId, this.unreadCount = 0, this.pendingCsatRatingId});
+  const OpenConversationInfo({this.conversationId, this.unreadCount = 0, this.pendingCsatRatingId, this.flow, this.saysFlow = false});
 
   final String? conversationId;
   final int unreadCount;
   final String? pendingCsatRatingId;
 
+  /// The workflow's state; null when none is running.
+  final FlowState? flow;
+
+  /// The server sent `flow` at all. One from before 17 Oct does not: the
+  /// composer then locks on the last message, as it always did.
+  final bool saysFlow;
+
   factory OpenConversationInfo.fromJson(Map<String, dynamic> j) => OpenConversationInfo(
         conversationId: _str(j['conversationId']),
         unreadCount: _int(j['unreadCount']),
         pendingCsatRatingId: _str(_map(j['csat'])['ratingId']),
+        flow: FlowState.fromJson(j['flow']),
+        saysFlow: j.containsKey('flow'),
       );
 }
 

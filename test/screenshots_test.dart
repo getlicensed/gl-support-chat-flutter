@@ -325,6 +325,83 @@ void main() {
     await t.pump(const Duration(seconds: 1));
   }, skip: !enabled);
 
+  // 0.4.10: the composer while the workflow runs, in each of its states, on
+  // iPhone and Android; and one frame halfway through a lock's cross-fade.
+  for (final platform in <TargetPlatform>[TargetPlatform.iOS, TargetPlatform.android]) {
+    testWidgets('composer while the workflow runs (${platform.name})', (t) async {
+      final p = platform == TargetPlatform.iOS ? 'ios' : 'android';
+      if (platform == TargetPlatform.iOS) {
+        phone(t);
+      } else {
+        // A small Android: 360 × 740, its status bar, no home indicator.
+        t.view.devicePixelRatio = 2;
+        t.view.physicalSize = const Size(360 * 2, 740 * 2);
+        t.view.viewPadding = const FakeViewPadding(top: 24 * 2);
+        t.view.padding = const FakeViewPadding(top: 24 * 2);
+        addTearDown(t.view.reset);
+      }
+      Map<String, dynamic> flow(String? awaiting, {bool letType = false}) => <String, dynamic>{
+            'awaiting': awaiting,
+            'letCustomerType': letType,
+            'workingUntil': awaiting == null ? DateTime.now().add(const Duration(seconds: 20)).toUtc().toIso8601String() : null,
+          };
+      final server = seeded();
+      server.openInfo = <String, dynamic>{...server.openInfo, 'flow': flow('choice')};
+      final channel = FakeChannel();
+      final c = controllerFor(server, channel);
+      await t.pumpWidget(RepaintBoundary(
+        key: const ValueKey<String>('screen'),
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(platform: platform, fontFamily: 'Roboto'),
+          home: GLSupportChatPage(controller: c, screen: GLSupportChatScreen.conversation('conv-1')),
+        ),
+      ));
+      Future<void> settle() async {
+        for (var i = 0; i < 12; i++) {
+          await t.pump(const Duration(milliseconds: 60));
+        }
+      }
+
+      String now() => DateTime.now().toUtc().toIso8601String();
+      void say(Map<String, dynamic> m) => channel.server('message:created', m);
+      void update(Map<String, dynamic>? f) => channel.server('flow:update', <String, dynamic>{'conversationId': 'conv-1', 'flow': f});
+
+      await settle();
+      channel.server('presence:update', <String, dynamic>{'orgId': 'o', 'agentsOnline': 1});
+      await settle();
+      await shoot(t, 'flow-$p-1-choice');
+      say(msg('v1', 'visitor', 'CCTV', at: now()));
+      update(flow(null));
+      await settle();
+      await shoot(t, 'flow-$p-2-working');
+      say(msg('p2', 'bot', 'What is your email?', at: now(), meta: <String, dynamic>{
+        'collect': <String, dynamic>{'field': 'email', 'label': 'Email', 'inputType': 'email'},
+        'lockComposer': true,
+      }));
+      update(flow('answer'));
+      await t.pump();
+      await t.pump(const Duration(milliseconds: 75));
+      await shoot(t, 'flow-$p-3-fading');
+      await settle();
+      await shoot(t, 'flow-$p-4-answer');
+      say(msg('v2', 'visitor', 'ayesha@example.com', at: now()));
+      say(msg('p3', 'bot', 'Anything else? Choose, or type your question.', at: now(), meta: <String, dynamic>{
+        'buttons': <Object?>[
+          <String, dynamic>{'id': 'b1', 'label': 'Book a course'},
+          <String, dynamic>{'id': 'b2', 'label': 'My certificate'},
+        ],
+        'lockComposer': false,
+      }));
+      update(flow('choice', letType: true));
+      await settle();
+      await shoot(t, 'flow-$p-5-choice-may-type');
+      update(null);
+      await settle();
+      await shoot(t, 'flow-$p-6-ended');
+    }, skip: !enabled);
+  }
+
   for (final face in <String?>[null, '😞']) {
     testWidgets('article with a button and reactions ${face ?? ''}', (t) async {
       phone(t, height: 1300);

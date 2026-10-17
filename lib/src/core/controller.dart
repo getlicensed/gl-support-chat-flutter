@@ -151,6 +151,33 @@ class MessengerController extends ChangeNotifier {
   String? flowNotice;
   String? collectError;
 
+  /// What the workflow is doing in the open conversation, as the server last
+  /// said (GET /widget/messages, `flow:update`); null while none is running.
+  /// Only meaningful while [flowKnown].
+  FlowState? flow;
+
+  /// The server says what the workflow is doing (since 17 Oct). The composer
+  /// is then locked for as long as a workflow runs — between a tap and the
+  /// next question too — and opens the moment it ends, whoever ended it. A
+  /// server from before never says: the lock follows the last message, as
+  /// it did up to 0.4.9.
+  bool flowKnown = false;
+
+  /// A working flow's `workingUntil` has passed with no word from the
+  /// server: the customer may type, rather than wait on a word that is lost.
+  bool _flowLapsed = false;
+  Timer? _flowTimer;
+
+  /// Moves on whenever the flow's state changes. A fetch that went out
+  /// before a change brings older news than it: it is not taken.
+  int _flowChanges = 0;
+
+  /// The longest a working flow keeps the composer locked, whatever its
+  /// `workingUntil` says. The server's longest step is a 30-second wait; a
+  /// phone whose clock runs slow would read a later time and hold the lock
+  /// for as long as it is behind.
+  static const longestWork = Duration(minutes: 2);
+
   /// Who is typing a reply: a teammate (named by a server since 12 Oct, so
   /// their face shows) or the workflow. Null while nobody is.
   TypingAuthor? typingAuthor;
@@ -487,6 +514,7 @@ class MessengerController extends ChangeNotifier {
   /// Which conversation is open, and its messages; or the opening menu.
   Future<void> _loadOpen(int epoch) async {
     final before = liveId;
+    final flowBefore = _flowChanges;
     OpenConversationInfo open;
     try {
       open = await api.openConversation();
@@ -499,6 +527,21 @@ class MessengerController extends ChangeNotifier {
     }
     if (epoch != _epoch) return;
     pendingCsatRatingId = open.pendingCsatRatingId;
+    // What the workflow is doing — after a reload, a reconnect or a reopen,
+    // whatever `flow:update` was missed meanwhile — unless one has come
+    // since this went out: that is newer.
+    if (_flowChanges == flowBefore) {
+      if (open.saysFlow) {
+        _takeFlow(open.flow);
+      } else if (open.conversationId == null) {
+        // No conversation open, so no workflow running in one — said by
+        // leaving the field out, perhaps, by a server that has said it
+        // before. One that never has stays as 0.4.9 was.
+        if (flowKnown) _takeFlow(null);
+      } else {
+        _forgetFlow();
+      }
+    }
     final id = open.conversationId;
     if (id == null) {
       // A conversation started meanwhile (the customer wrote): that is the one.
@@ -627,6 +670,7 @@ class MessengerController extends ChangeNotifier {
     flowBusy = false;
     flowNotice = null;
     collectError = null;
+    _forgetFlow();
     typingAuthor = null;
     _arriving.clear();
     _sentAs.clear();
@@ -843,6 +887,13 @@ class MessengerController extends ChangeNotifier {
         final author = typing ? who : null;
         if (author == typingAuthor) return;
         typingAuthor = author;
+        _notify();
+      case 'flow:update':
+        // Every change of the workflow's state, its end too — the path's
+        // end, the customer typing, a teammate replying, assigning, moving
+        // or closing. One without the field says nothing.
+        if (!_inLive(data) || !data.containsKey('flow')) return;
+        _takeFlow(FlowState.fromJson(data['flow']));
         _notify();
       case 'ai:stream_start':
         _onStreamStart(data);
@@ -1350,6 +1401,10 @@ class MessengerController extends ChangeNotifier {
   /// The last message, if it is a bot question still waiting for an answer.
   ChatMessage? get livePrompt {
     if (live.isEmpty) return null;
+    // The server says no workflow runs here: its buttons are dead (a tap
+    // would only be told `not_in_flow`), so they go — a teammate took over,
+    // or the flow ended.
+    if (flowKnown && flow == null) return null;
     final last = live.last;
     if (last.authorType != 'bot' || settledPrompts.contains(last.id)) return null;
     return (last.meta?.isPrompt ?? false) ? last : null;
@@ -1362,6 +1417,7 @@ class MessengerController extends ChangeNotifier {
     if (!liveLoaded) return 'Loading…';
     final p = preview;
     if (live.isEmpty && p != null && !p.letCustomerType) return 'Choose an option above';
+    if (flowKnown) return _flowLock;
     final prompt = livePrompt;
     if (prompt != null && prompt.meta!.lockComposer) {
       return prompt.meta!.collect != null ? 'Answer the question above' : 'Choose an option above';
@@ -1369,7 +1425,70 @@ class MessengerController extends ChangeNotifier {
     return null;
   }
 
+  /// Locked for as long as a workflow runs — "Learners should not have the
+  /// option to type a manual message when the Workflow is active" (CS, 17
+  /// Oct) — except on buttons whose path lets them type.
+  String? get _flowLock {
+    final f = flow;
+    if (f == null) return null;
+    switch (f.awaiting) {
+      case 'choice':
+        return f.letCustomerType ? null : 'Choose an option above';
+      case 'answer':
+        return 'Answer the question above';
+      case null:
+        return _flowLapsed ? null : 'One moment…';
+      default:
+        // A state from a newer server: never a lock this version cannot lift.
+        return null;
+    }
+  }
+
+  /// The server's word on the workflow, from a fetch or an event. A working
+  /// flow unlocks by itself at its `workingUntil` (at most [longestWork]
+  /// away) if nothing has changed by then.
+  void _takeFlow(FlowState? f) {
+    _flowChanges++;
+    flowKnown = true;
+    flow = f;
+    _flowLapsed = false;
+    _flowTimer?.cancel();
+    _flowTimer = null;
+    if (f == null || !f.working) return;
+    final until = f.workingUntil;
+    var wait = until == null ? longestWork : until.difference(_now());
+    if (wait > longestWork) wait = longestWork;
+    if (wait <= Duration.zero) {
+      _flowLapsed = true;
+      return;
+    }
+    _flowTimer = Timer(wait, () {
+      _flowTimer = null;
+      if (!identical(flow, f) || _disposed) return;
+      _flowLapsed = true;
+      _notify();
+    });
+  }
+
+  /// Back to not knowing: someone else signed in, or a server from before
+  /// 17 Oct answered.
+  void _forgetFlow() {
+    _flowTimer?.cancel();
+    _flowTimer = null;
+    flow = null;
+    flowKnown = false;
+    _flowLapsed = false;
+  }
+
   static const _settled = <String>{'stale', 'not_in_flow', 'workflow_gone', 'unknown_button'};
+
+  /// A tap was told no workflow runs here — a teammate took over and the
+  /// `flow:update` saying so was missed: the composer opens. Only on a
+  /// server that says what the flow is doing; on one from before, settling
+  /// the question does it, as it always did.
+  void _flowGone(Object? error) {
+    if (error == 'not_in_flow' && flowKnown) _takeFlow(null);
+  }
 
   static String flowFailed(Object? error) {
     final e = error is String ? error : '';
@@ -1437,6 +1556,7 @@ class MessengerController extends ChangeNotifier {
     if (ack['ok'] != true) {
       if (_settled.contains(ack['error'])) {
         settledPrompts.add(prompt.id);
+        _flowGone(ack['error']);
       } else {
         flowNotice = flowFailed(ack['error']);
       }
@@ -1468,6 +1588,7 @@ class MessengerController extends ChangeNotifier {
     var ok = ack['ok'] == true;
     if (!ok && _settled.contains(ack['error'])) {
       settledPrompts.add(prompt.id);
+      _flowGone(ack['error']);
       ok = true;
     } else if (!ok) {
       collectError = flowFailed(ack['error']);
@@ -1759,6 +1880,7 @@ class MessengerController extends ChangeNotifier {
     _agentTypingTimer?.cancel();
     _drip?.cancel();
     _emailThanks?.cancel();
+    _flowTimer?.cancel();
     _releaseWaiting();
     super.dispose();
   }

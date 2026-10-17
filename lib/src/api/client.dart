@@ -122,7 +122,8 @@ class MessengerApi {
   // Conversations
   // ------------------------------------------------------------------
 
-  /// GET /widget/messages — which conversation is open, its unread, a pending CSAT.
+  /// GET /widget/messages — which conversation is open, its unread, a pending
+  /// CSAT, and what its workflow is doing.
   Future<OpenConversationInfo> openConversation() async =>
       OpenConversationInfo.fromJson(await _json('GET', '/widget/messages'));
 

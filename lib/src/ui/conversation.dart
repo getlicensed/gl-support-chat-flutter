@@ -3212,6 +3212,9 @@ class _Composer extends StatefulWidget {
   /// A line more or less, eased.
   static const grow = Duration(milliseconds: 150);
 
+  /// The field's cross-fade as a lock comes, changes its hint, or goes.
+  static const swap = Duration(milliseconds: 150);
+
   @override
   State<_Composer> createState() => _ComposerState();
 }
@@ -3315,59 +3318,78 @@ class _ComposerState extends State<_Composer> {
   Widget _box(BuildContext context) {
     final c = context.messenger;
     final brand = c.brand;
+    // Waiting on a button or a detail above, on the workflow between its
+    // steps, or for the thread to load: the box says why and takes nothing
+    // — no typing, no photo — at the height of the real one, so the thread
+    // does not move when the lock comes or goes.
     final lock = c.composerLock;
-    // Waiting on a button or a detail above (or for the thread to load): a
-    // composer that cannot be typed in, saying why, the height of the real
-    // one — the thread does not jump when typing is allowed.
-    if (lock != null) return _LockedComposer(hint: lock);
+    final locked = lock != null;
     // Not tied to the connection: the controller takes a message while it
     // connects and sends it once it can, so the customer is never left
     // looking at a grey Send button.
-    final canSend = _text.text.trim().isNotEmpty;
-    // The photo and Send buttons belong to the field's tap region: tapping
-    // them keeps the keyboard up, as in any chat app. A tap anywhere else —
-    // the thread, the header — puts it away.
+    final canSend = !locked && _text.text.trim().isNotEmpty;
+    // One box, locked or not: the photo button and Send stay where they are
+    // and turn grey (or back) over their 180 ms, and the field cross-fades
+    // between the message box and the hint over 150 ms. The photo and Send
+    // buttons belong to the field's tap region: tapping them keeps the
+    // keyboard up, as in any chat app. A tap anywhere else — the thread,
+    // the header — puts it away.
     final box = Container(
         padding: EdgeInsets.fromLTRB(8, 8, 10, 8 + MediaQuery.paddingOf(context).bottom),
         decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Palette.border))),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            _PhotoButton(onTap: _attach),
+            _PhotoButton(onTap: locked ? null : _attach),
             Expanded(
-              child: TextField(
-                controller: _text,
-                minLines: 1,
-                maxLines: 5,
-                textCapitalization: TextCapitalization.sentences,
-                keyboardType: TextInputType.multiline,
-                onChanged: (v) {
-                  setState(() {});
-                  c.composerChanged(v);
-                },
-                onTapOutside: dismissKeyboard,
-                style: fieldText,
-                cursorColor: brand.ink,
-                decoration: _composerDecoration(brand, 'Type a message…'),
+              child: AnimatedSwitcher(
+                // Even with less motion asked for: see [fullTime].
+                duration: fullTime(_Composer.swap),
+                // Not keyed by the child (the default): a lock that comes and
+                // goes within the fade would put two of one key side by side.
+                transitionBuilder: (child, animation) => FadeTransition(opacity: animation, child: child),
+                layoutBuilder: _Going.layout,
+                child: locked
+                    ? _LockedField(key: ValueKey<String>('lock:$lock'), hint: lock)
+                    : TextField(
+                        key: const ValueKey<String>('field'),
+                        controller: _text,
+                        minLines: 1,
+                        maxLines: 5,
+                        textCapitalization: TextCapitalization.sentences,
+                        keyboardType: TextInputType.multiline,
+                        onChanged: (v) {
+                          setState(() {});
+                          c.composerChanged(v);
+                        },
+                        onTapOutside: dismissKeyboard,
+                        style: fieldText,
+                        cursorColor: brand.ink,
+                        decoration: _composerDecoration(brand, 'Type a message…'),
+                      ),
               ),
             ),
             const SizedBox(width: 6),
-            Semantics(
-              button: true,
-              label: 'Send',
-              // Its own Material, the circle painted on it as Ink: Android's
-              // ripple shows over the circle, not under the composer's white.
-              child: Material(
-                type: MaterialType.transparency,
-                child: SizedBox(
-                  width: RoundIconButton.minTarget,
-                  height: RoundIconButton.minTarget,
-                  child: Pressable(
-                    onTap: canSend ? _send : null,
-                    shape: const CircleBorder(),
-                    inner: const Size.square(_SendCircle.size),
-                    onBrand: canSend,
-                    child: _SendCircle(ready: canSend, brand: brand),
+            // Locked, there is nothing to send: not read out as a button.
+            ExcludeSemantics(
+              excluding: locked,
+              child: Semantics(
+                button: true,
+                label: 'Send',
+                // Its own Material, the circle painted on it as Ink: Android's
+                // ripple shows over the circle, not under the composer's white.
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: SizedBox(
+                    width: RoundIconButton.minTarget,
+                    height: RoundIconButton.minTarget,
+                    child: Pressable(
+                      onTap: canSend ? _send : null,
+                      shape: const CircleBorder(),
+                      inner: const Size.square(_SendCircle.size),
+                      onBrand: canSend,
+                      child: _SendCircle(ready: canSend, brand: brand),
+                    ),
                   ),
                 ),
               ),
@@ -3378,17 +3400,47 @@ class _ComposerState extends State<_Composer> {
     // A line more or less as they type: the box eases to its height from
     // the bottom up, so the thread above moves over 150 ms, not 46 points
     // in one frame — with less motion asked for too, as Intercom's (see
-    // [fullTime]). Emptied by Send, it is one line at once ([_sends]).
+    // [fullTime]). Emptied by Send, it is one line at once ([_sends]). A
+    // lock over lines typed and not sent eases down to one line the same way.
     return TextFieldTapRegion(
       child: AnimatedSize(
         key: ValueKey<int>(_sends),
         duration: fullTime(_Composer.grow),
         curve: Curves.easeOutCubic,
         alignment: Alignment.bottomCenter,
-        child: KeyedSubtree(key: _boxKey, child: box),
+        // Locked, nothing in it takes focus: a lock that comes while the
+        // customer types puts the keyboard away, as there is nothing to type in.
+        child: KeyedSubtree(key: _boxKey, child: ExcludeFocus(excluding: locked, child: box)),
       ),
     );
   }
+}
+
+/// One of the field's looks — the message box, or a lock's hint — or the
+/// one it is fading from. The one going takes no tap and no focus, and is
+/// not read out.
+class _Going extends StatelessWidget {
+  const _Going({super.key, required this.going, required this.child});
+  final bool going;
+  final Widget child;
+
+  /// The field's look and the one it is fading from, in one place: the
+  /// height is the taller's, so a fade never moves the box. Each keeps its
+  /// key, so the one going keeps its state as it fades.
+  static Widget layout(Widget? current, List<Widget> previous) => Stack(
+        fit: StackFit.passthrough,
+        alignment: Alignment.bottomCenter,
+        children: <Widget>[
+          for (final p in previous) _Going(key: p.key, going: true, child: p),
+          if (current != null) _Going(key: current.key, going: false, child: current),
+        ],
+      );
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+        ignoring: going,
+        child: ExcludeFocus(excluding: going, child: ExcludeSemantics(excluding: going, child: child)),
+      );
 }
 
 /// The photo button beside the message box: 48 points, its press in a
@@ -3416,7 +3468,13 @@ class _PhotoButton extends StatelessWidget {
                 onTap: onTap,
                 shape: const CircleBorder(),
                 inner: const Size.square(40),
-                child: Icon(Icons.add_photo_alternate_outlined, color: onTap == null ? Palette.faint : Palette.muted),
+                // Grey while locked, turning as Send does.
+                child: TweenAnimationBuilder<Color?>(
+                  tween: ColorTween(end: onTap == null ? Palette.faint : Palette.muted),
+                  duration: fullTime(_SendCircle.turn),
+                  curve: Curves.easeOut,
+                  builder: (_, color, __) => Icon(Icons.add_photo_alternate_outlined, color: color),
+                ),
               ),
             ),
           ),
@@ -3471,49 +3529,24 @@ InputDecoration _composerDecoration(BrandColors brand, String hint, {bool enable
       focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide(color: brand.ink)),
     );
 
-/// The composer while typing waits on something above — a button to
-/// choose, a detail to give, the thread to load: the same box, saying what
-/// it waits for, that takes nothing. Not a text field: no keyboard, no focus.
-class _LockedComposer extends StatelessWidget {
-  const _LockedComposer({required this.hint});
+/// The message box while typing waits on something — a button to choose, a
+/// detail to give, the workflow between its steps, the thread to load: the
+/// same box, saying what it waits for, that takes nothing. Not a text
+/// field: no keyboard, no focus.
+class _LockedField extends StatelessWidget {
+  const _LockedField({super.key, required this.hint});
   final String hint;
 
   @override
   Widget build(BuildContext context) {
-    final brand = context.brand;
     final theme = Theme.of(context);
     // The text a TextField would type in, so the box is the same height.
     final style = (theme.useMaterial3 ? theme.textTheme.bodyLarge : theme.textTheme.titleMedium)!.merge(fieldText);
-    return ExcludeFocus(
-      child: Container(
-        padding: EdgeInsets.fromLTRB(8, 8, 10, 8 + MediaQuery.paddingOf(context).bottom),
-        decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Palette.border))),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            const _PhotoButton(onTap: null),
-            Expanded(
-              child: InputDecorator(
-                decoration: _composerDecoration(brand, hint, enabled: false),
-                baseStyle: style,
-                isEmpty: true,
-                child: Text(' ', style: style, maxLines: 1),
-              ),
-            ),
-            const SizedBox(width: 6),
-            ExcludeSemantics(
-              child: Material(
-                type: MaterialType.transparency,
-                child: SizedBox(
-                  width: RoundIconButton.minTarget,
-                  height: RoundIconButton.minTarget,
-                  child: _SendCircle(ready: false, brand: brand),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
+    return InputDecorator(
+      decoration: _composerDecoration(context.brand, hint, enabled: false),
+      baseStyle: style,
+      isEmpty: true,
+      child: Text(' ', style: style, maxLines: 1),
     );
   }
 }
