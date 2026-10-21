@@ -94,12 +94,17 @@ class SocketIoChannel implements RealtimeChannel {
     }
   }
 
+  // Every event MessengerController._onEvent handles must be here: Socket.IO
+  // drops an event nobody listens for. 0.4.10 handled `flow:update` and left
+  // it out, so its lock heard the workflow only on an open or a reconnect.
+  // test/realtime_test.dart checks the two against each other.
   static const _serverEvents = <String>[
     'message:created',
     'presence:update',
     'conversation:seen',
     'typing:start',
     'typing:stop',
+    'flow:update',
     'ai:stream_start',
     'ai:stream_chunk',
     'ai:stream_end',
