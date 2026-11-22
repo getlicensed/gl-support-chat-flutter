@@ -61,11 +61,13 @@ Uri? whatsappChipLink({required String? number, required String? template, requi
   return Uri.https('wa.me', '/$number', <String, String>{'text': text});
 }
 
-/// A run of message text: plain, or a link with what to show for it.
+/// A run of message text: plain, or a link with what to show for it, or
+/// bold (the team's `*words*`, 0.4.12).
 class TextRun {
-  const TextRun(this.text, [this.url]);
+  const TextRun(this.text, [this.url, this.bold = false]);
   final String text;
   final String? url;
+  final bool bold;
   bool get isLink => url != null;
 }
 
@@ -74,12 +76,29 @@ final _trailing = RegExp(r'[.,;:!?)\]]+$');
 
 /// Links in a message: `[label](https://…)` and bare https URLs, with trailing
 /// punctuation left outside the link ("see https://x.com/a." links x.com/a).
-/// Everything else stays plain text — a message is never HTML.
-List<TextRun> linkify(String text) {
+/// With [bold] (the team's words, 0.4.12), `*words*` between the links are
+/// bold, without their stars. Everything else stays plain text — a message
+/// is never HTML.
+List<TextRun> linkify(String text, {bool bold = false}) {
   final runs = <TextRun>[];
+  void words(String t) {
+    if (!bold) {
+      runs.add(TextRun(t));
+      return;
+    }
+    var at = 0;
+    for (final s in boldSpans(t)) {
+      if (s.start > at) runs.add(TextRun(t.substring(at, s.start)));
+      final len = t.startsWith('**', s.start) ? 2 : 1;
+      runs.add(TextRun(t.substring(s.start + len, s.end - len), null, true));
+      at = s.end;
+    }
+    if (at < t.length) runs.add(TextRun(t.substring(at)));
+  }
+
   var at = 0;
   for (final m in _linkPattern.allMatches(text)) {
-    if (m.start > at) runs.add(TextRun(text.substring(at, m.start)));
+    if (m.start > at) words(text.substring(at, m.start));
     if (m.group(1) != null) {
       runs.add(TextRun(m.group(1)!, m.group(2)));
     } else {
@@ -87,13 +106,65 @@ List<TextRun> linkify(String text) {
       final tail = _trailing.firstMatch(raw)?.group(0) ?? '';
       final url = raw.substring(0, raw.length - tail.length);
       runs.add(TextRun(url, url));
-      if (tail.isNotEmpty) runs.add(TextRun(tail));
+      if (tail.isNotEmpty) words(tail);
     }
     at = m.end;
   }
-  if (at < text.length) runs.add(TextRun(text.substring(at)));
+  if (at < text.length) words(text.substring(at));
   return runs;
 }
+
+final _wordChar = RegExp(r'[\p{L}\p{N}_]', unicode: true);
+final _spaceChar = RegExp(r'\s');
+
+/// Where `*bold*` (or `**bold**`, as an AI writes it) is in some words, by
+/// WhatsApp's rule, which the inbox writes since 22 Nov: the opening star
+/// after a space, punctuation or the start and before a letter; the closing
+/// one after a letter and before a space, punctuation or the end; both on
+/// one line. So "5*3*2", "* a list" and a lone "*Terms apply" stay as typed.
+/// The website messenger's rule (apps/widget/src/chat-marks.ts in the
+/// server's repo), character for character.
+List<({int start, int end})> boldSpans(String text) {
+  final spans = <({int start, int end})>[];
+  bool word(String c) => _wordChar.hasMatch(c);
+  bool space(String c) => _spaceChar.hasMatch(c);
+  var i = 0;
+  while (i < text.length) {
+    final c = text.indexOf('*', i);
+    if (c == -1) break;
+    final len = c + 1 < text.length && text[c + 1] == '*' ? 2 : 1;
+    final prev = c > 0 ? text[c - 1] : '';
+    final first = c + len < text.length ? text[c + len] : '';
+    if ((prev.isNotEmpty && (word(prev) || prev == '*')) || first.isEmpty || space(first) || first == '*') {
+      i = c + len;
+      continue;
+    }
+    final lineEnd = text.indexOf('\n', c);
+    final limit = lineEnd == -1 ? text.length : lineEnd;
+    final marker = len == 2 ? '**' : '*';
+    var found = -1;
+    for (var k = text.indexOf(marker, c + len); k != -1 && k < limit; k = text.indexOf(marker, k + 1)) {
+      final before = text[k - 1];
+      final after = k + len < text.length ? text[k + len] : '';
+      if (len == 1 && after == '*') continue; // a "**" is not a single closing star
+      if (space(before) || before == '*') continue;
+      if (after.isNotEmpty && (word(after) || after == '*')) continue;
+      found = k;
+      break;
+    }
+    if (found == -1) {
+      i = c + len;
+      continue;
+    }
+    spans.add((start: c, end: found + len));
+    i = found + len;
+  }
+  return spans;
+}
+
+/// The team's words without their marks — a link's label, bold without its
+/// stars — for a one-line preview and a copy.
+String plainMessageText(String text) => linkify(text, bold: true).map((r) => r.text).join();
 
 /// The AI's hand-over marker, which the customer never sees.
 String stripEscalationMarker(String text) {
@@ -134,9 +205,11 @@ String agoLabel(DateTime then, DateTime now) => now.difference(then).inMinutes <
 
 /// What the Messages list shows for a conversation's last message.
 String previewLine(ConversationSummary c) {
-  final body = (c.lastBody ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
+  final mine = c.lastAuthorType == 'visitor';
+  // The team's marks are for the bubble: the preview shows their words (0.4.12).
+  final body = (mine ? c.lastBody ?? '' : plainMessageText(c.lastBody ?? '')).replaceAll(RegExp(r'\s+'), ' ').trim();
   if (body.isEmpty) return 'No messages yet';
-  return c.lastAuthorType == 'visitor' ? 'You: $body' : body;
+  return mine ? 'You: $body' : body;
 }
 
 /// The chatbot's colour and the shades the design derives from it — the

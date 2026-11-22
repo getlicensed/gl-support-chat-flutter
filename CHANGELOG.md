@@ -1,3 +1,12 @@
+## 0.4.12
+
+Bold in the team's messages, and a macro's screenshots in their place, from the CS lead's feedback of 17 and 18 Nov. **Nothing to change in an app but the `ref`**; it has all of 0.4.9 to 0.4.11 in it, the Flutter floor stays 3.24, no dependency was added, and nothing public changed. It works with any server; the marks it reads come from the inbox since 22 Nov.
+
+- **Bold.** Since 22 Nov the inbox's chat and WhatsApp box has Bold (Ctrl/Cmd+B), and writes it as WhatsApp does: `*14 Dec*`. The website messenger shows it bold; up to 0.4.11 the apps showed the stars. Now the team's `*words*` (and `**words**`, as an AI writes them) are bold, without their stars, by WhatsApp's rule — the opening star after a space, punctuation or the start, the closing one before them, both on one line — so "5\*3\*2", "\* a list" and a lone "\*Terms apply" stay as typed. The same rule as the website messenger's, case for case. The customer's own words are never read for marks.
+- **The team's words come before their photo or file**, as on the website. The inbox now sends a macro with screenshots as one message a step — "1." with its screenshot, "2." with its own — and the apps put a message's photo above its words, so "1." stood under its screenshot. The customer's own photo keeps its words under it.
+- **The Messages list and a copy** show the team's words without their marks: a link's label, bold without its stars (the list showed `[label](https://…)` before).
+- New tests: `test/bold_test.dart` (the website messenger's cases, links and bold together, the Messages list, and in the thread: bold without stars, the customer's words as typed, "2." over its screenshot).
+
 ## 0.4.11
 
 0.4.10's workflow lock, fixed: in an app it never heard `flow:update`. **Nothing to change in an app but the `ref`**; take it instead of 0.4.10. It has all of 0.4.9 and 0.4.10 in it, the Flutter floor stays 3.24, no dependency was added, and nothing public changed. Like 0.4.10 it needs the server from 17 Oct; with an older one the composer behaves exactly as in 0.4.9.
