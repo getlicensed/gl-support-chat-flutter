@@ -1528,10 +1528,13 @@ class _TeamRow extends StatelessWidget {
 /// set into it: it wraps with the sentence, and the phone's text size is
 /// applied once (a widget inside was scaled twice, and broke the line).
 class _RichText extends StatefulWidget {
-  const _RichText(this.text, {required this.color, required this.linkColor});
+  const _RichText(this.text, {required this.color, required this.linkColor, this.bold = false});
   final String text;
   final Color color;
   final Color linkColor;
+
+  /// The team's `*words*` as bold (0.4.12); the customer's own stay as typed.
+  final bool bold;
 
   @override
   State<_RichText> createState() => _RichTextState();
@@ -1552,7 +1555,7 @@ class _RichTextState extends State<_RichText> {
   @override
   void didUpdateWidget(_RichText old) {
     super.didUpdateWidget(old);
-    if (old.text != widget.text || old.linkColor != widget.linkColor) _spans = _build();
+    if (old.text != widget.text || old.linkColor != widget.linkColor || old.bold != widget.bold) _spans = _build();
   }
 
   @override
@@ -1572,12 +1575,16 @@ class _RichTextState extends State<_RichText> {
     _forget();
     final link = TextStyle(color: widget.linkColor, decoration: TextDecoration.underline, decorationColor: widget.linkColor);
     final spans = <InlineSpan>[];
-    for (final r in linkify(widget.text)) {
+    for (final r in linkify(widget.text, bold: widget.bold)) {
       // A link the URL parser refuses (an unfilled placeholder such as
       // "https://[booking-link]") stays plain text. Parsed while building,
       // it threw and hid the whole message behind an error box.
       final url = r.isLink ? Uri.tryParse(r.url!) : null;
-      spans.add(url == null ? TextSpan(text: r.text) : TextSpan(text: r.text, style: link, recognizer: _tap(url)));
+      spans.add(url != null
+          ? TextSpan(text: r.text, style: link, recognizer: _tap(url))
+          : r.bold
+              ? TextSpan(text: r.text, style: const TextStyle(fontWeight: FontWeight.w700))
+              : TextSpan(text: r.text));
     }
     return spans;
   }
@@ -1615,23 +1622,30 @@ class _Bubble extends StatelessWidget {
     final fg = mine ? brand.onPrimary : Palette.text;
     // A photo alone is the bubble, edge to edge: no band of colour under it.
     final onlyMedia = text.isEmpty && m.attachments.isNotEmpty && m.attachments.every((a) => a.isImage);
+    // A long press copies the words (the team's without their marks). On the
+    // words alone: over the whole bubble it held back the taps of a card or a
+    // photo in it.
+    final words = text.isEmpty
+        ? null
+        : GestureDetector(
+            onLongPress: () {
+              HapticFeedback.lightImpact();
+              Clipboard.setData(ClipboardData(text: mine ? text : plainMessageText(text)));
+              ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Copied')));
+            },
+            // A link in the team's bubble reads at 7:1, as the words round it.
+            child: _RichText(text, color: fg, linkColor: mine ? fg : brand.inkOn(Palette.agentBubble, 7), bold: !mine),
+          );
     // Each part, and the room above it: none above the first, so nothing
-    // trails under the last.
+    // trails under the last. The team's words come before their photos and
+    // files, as on the website (0.4.12): a macro's steps arrive as "1." with
+    // its screenshot under it, then "2." with its own. The customer's own
+    // photo keeps its words under it.
     final parts = <(double, Widget)>[
       if (bot && meta?.imageUrl != null) (8, _BotImage(url: meta!.imageUrl!)),
+      if (words != null && !mine) (6, words),
       for (final a in m.attachments) (6, _AttachmentView(attachment: a, mine: mine, framed: !onlyMedia)),
-      // A long press copies the words. On the words alone: over the whole
-      // bubble it held back the taps of a card or a photo in it.
-      if (text.isNotEmpty)
-        (6, GestureDetector(
-          onLongPress: () {
-            HapticFeedback.lightImpact();
-            Clipboard.setData(ClipboardData(text: text));
-            ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Copied')));
-          },
-          // A link in the team's bubble reads at 7:1, as the words round it.
-          child: _RichText(text, color: fg, linkColor: mine ? fg : brand.inkOn(Palette.agentBubble, 7)),
-        )),
+      if (words != null && mine) (6, words),
       if (bot && meta?.articleSlug != null && context.messenger.session?.helpBaseUrl != null)
         (8, _InBubbleCard(
           icon: Icons.description_outlined,
